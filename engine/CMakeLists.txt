@@ -22,6 +22,7 @@ add_library(matcha_lib
     src/arena.cpp
     src/order_book.cpp
     src/price_level.cpp
+    src/protocol.cpp
 )
 
 add_executable(matcha
@@ -35,6 +36,7 @@ target_link_libraries(matcha
 
 add_executable(matcha_tests
     tests/main.cpp
+    tests/protocol.cpp
 )
 
 target_link_libraries(matcha_tests

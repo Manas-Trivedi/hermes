@@ -38,3 +38,11 @@ struct Order{
           next(nullptr)
     {}
 };
+
+// One resting order as seen from outside the book.
+struct BookEntry {
+    Side side;
+    uint64_t id;
+    uint64_t price;
+    uint64_t qty;
+};

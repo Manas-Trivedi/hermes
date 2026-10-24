@@ -106,3 +106,12 @@ void OrderBook::display_book() const {
         it.second.display_level();
     }
 }
+
+void OrderBook::snapshot(std::vector<BookEntry> &out) const {
+    for(auto it = bids.rbegin(); it != bids.rend(); ++it) {
+        it->second.snapshot(Side::BUY, out);
+    }
+    for(const auto &level : asks) {
+        level.second.snapshot(Side::SELL, out);
+    }
+}

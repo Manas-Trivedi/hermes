@@ -30,4 +30,7 @@ class OrderBook {
     [[nodiscard]] Status insert_order(const Order &order, std::vector<Trade> &trades);
     [[nodiscard]] Status cancel_order(uint64_t order_id);
     void display_book() const;
+    // Appends every resting order: bids best price first, then asks best price
+    // first, time priority within a price.
+    void snapshot(std::vector<BookEntry> &out) const;
 };

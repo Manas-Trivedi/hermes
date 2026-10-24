@@ -67,3 +67,9 @@ void PriceLevel::display_level() const {
     }
     std::cout << "\n";
 }
+
+void PriceLevel::snapshot(Side side, std::vector<BookEntry> &out) const {
+    for(const Order *o = head; o; o = o->next) {
+        out.push_back({side, o->id, price, o->qty});
+    }
+}

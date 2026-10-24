@@ -1,61 +1,41 @@
-#include <cstdint>
-#include <vector>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
-#include <matcha/order.hpp>
-#include <matcha/price_level.hpp>
-#include <matcha/order_book.hpp>
+#include <string>
+#include <matcha/protocol.hpp>
 
-void take_order(Order &order) {
-    std::cout << "Enter order id::";
-    std::cin >> order.id;
-    uint64_t order_type;
-    std::cout << "Enter order type(0/1/2)::";
-    std::cin >> order_type;
-    order.order_type = (order_type == 0) ? OrderType::LIMIT : (order_type == 1 ? OrderType::MARKET : OrderType::CANCEL);
-    if(order_type != 2) {
-        std::cout << "Enter order side(0/1)::";
-        uint64_t side;
-        std::cin >> side;
-        order.side = (side == 0) ? Side::BUY : Side::SELL;
-        if(order_type != 1) {
-            std::cout << "Enter order price::";
-            std::cin >> order.price;
-        }
-        std::cout << "Enter order quantity::";
-        std::cin >> order.qty;
+// Reads one line, keeping at most MAX_LINE + 1 bytes and discarding the rest,
+// so an over-long line costs bounded memory. handle_command rejects the
+// MAX_LINE + 1 byte remainder as too long. Returns false at EOF.
+static bool read_line(std::string &line) {
+    line.clear();
+    bool any = false;
+    int c;
+    while((c = std::cin.get()) != EOF) {
+        any = true;
+        if(c == '\n') return true;
+        if(line.size() <= MAX_LINE) line.push_back(static_cast<char>(c));
     }
+    return any;
 }
 
-const char* status_name(Status s) {
-    switch(s) {
-        case Status::Ok: return "OK";
-        case Status::DuplicateId: return "DUPLICATE_ID";
-        case Status::ArenaFull: return "ARENA_FULL";
-        case Status::UnknownId: return "UNKNOWN_ID";
+int main(int argc, char **argv) {
+    char *end = nullptr;
+    unsigned long long arena = 0;
+    if(argc == 3 && std::strcmp(argv[1], "--arena") == 0) arena = std::strtoull(argv[2], &end, 10);
+    if(arena == 0 || !end || *end != '\0') {
+        std::fprintf(stderr, "usage: matcha --arena <max resting orders>\n");
+        return 2;
     }
-    return "?";
-}
 
-int main() {
-    size_t orders;
-    std::cout << "Enter arena size: ";
-    std::cin >> orders;
-    std::cout << "Enter number of orders: ";
-    size_t n;
-    std::cin >> n;
-    OrderBook book(orders);
-    std::vector<Trade> trades;
-    for(size_t i = 0; i < n; i++) {
-        Order order;
-        take_order(order);
-        trades.clear();
-        Status status = book.insert_order(order, trades);
-        if(status != Status::Ok) std::cout << "REJECTED " << status_name(status) << "\n";
-        for(const Trade &t : trades) {
-            std::cout << "TRADE taker=" << t.taker_id << " maker=" << t.maker_id
-                      << " price=" << t.price << " qty=" << t.qty << "\n";
-        }
+    OrderBook book(arena);
+    std::cout << "READY\n" << std::flush;
+
+    std::string line;
+    while(read_line(line)) {
+        // flush every reply: the client blocks until it arrives
+        std::cout << handle_command(book, line) << std::flush;
     }
-    book.display_book();
     return 0;
 }

@@ -72,13 +72,13 @@ cmake --build build
 ./build/matcha_tests
 ```
 
-**Play with the book interactively**
+**Drive the book from the command line**
 
 ```bash
-./build/matcha
+printf 'SELL 1 100 1\nBUY 8 105 1\nBOOK\n' | ./build/matcha --arena 1000
 ```
 
-You enter orders on stdin (id, type, side, price, quantity). Each trade is printed as it happens, rejected orders are reported with a reason, and the book is printed at the end with the best prices first.
+The engine reads one command per line on stdin and writes one reply per command on stdout. It prints `READY` when it is up, and exits when stdin closes. The full command set and reply format are documented in the protocol notes under the engine directory.
 
 ## Matching rules
 

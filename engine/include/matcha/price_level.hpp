@@ -14,4 +14,5 @@ class PriceLevel {
     void fill_order(Order*, std::vector<Trade>&, std::vector<uint64_t>&);
     bool empty() const;
     void display_level() const;
+    void snapshot(Side side, std::vector<BookEntry> &out) const;
 };
