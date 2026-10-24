@@ -72,6 +72,14 @@ cmake --build build
 ./build/matcha_tests
 ```
 
+**Test the Python client**
+
+Needs [uv](https://docs.astral.sh/uv/) and the engine built as above.
+
+```bash
+uv run pytest
+```
+
 **Drive the book from the command line**
 
 ```bash
