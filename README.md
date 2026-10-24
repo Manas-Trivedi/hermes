@@ -42,7 +42,7 @@ Hermes is being built in the open, one small step at a time.
 
 | Stage | What | State |
 |---|---|---|
-| Matching engine | Price-time priority order book, trade reporting, hardened input handling | In progress |
+| Matching engine | Price-time priority order book with trade reporting and input rejection | Done |
 | Engine interface and scheduler | Drive the book from other processes, release capacity slices | Planned |
 | Throttled gateway | Mock backend, FIFO baseline, exchange-gated forwarding | Planned |
 | Urgency model | Explainable bid pricing, regenerating credit budgets | Planned |
@@ -78,7 +78,7 @@ cmake --build build
 ./build/matcha
 ```
 
-You enter orders on stdin (id, type, side, price, quantity) and the book is printed at the end.
+You enter orders on stdin (id, type, side, price, quantity). Each trade is printed as it happens, rejected orders are reported with a reason, and the book is printed at the end with the best prices first.
 
 ## Matching rules
 
@@ -86,7 +86,9 @@ You enter orders on stdin (id, type, side, price, quantity) and the book is prin
 - Orders at the same price fill in arrival order.
 - Partial fills are supported. An unfilled limit remainder rests in the book.
 - A market order never rests.
+- Trades execute at the resting order's price.
 - Resting orders can be cancelled by id.
+- An order is rejected if its id is already resting, if there is no room left to rest it, or, for a cancel, if the id is unknown.
 
 ## Roadmap
 
