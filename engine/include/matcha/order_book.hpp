@@ -24,10 +24,10 @@ class OrderBook {
     void drain_filled_orders();
     void match_order(Order *order, std::vector<Trade> &trades);
     public:
-    OrderBook(size_t n) : arena(n) {}
+    explicit OrderBook(size_t n) : arena(n) {}
     bool contains_order(uint64_t order_id) const;
     const Order* get_order(uint64_t id) const;
     [[nodiscard]] Status insert_order(const Order &order, std::vector<Trade> &trades);
     [[nodiscard]] Status cancel_order(uint64_t order_id);
-    void display_book();
+    void display_book() const;
 };

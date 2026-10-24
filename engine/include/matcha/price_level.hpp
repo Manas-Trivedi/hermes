@@ -12,6 +12,6 @@ class PriceLevel {
     void add_order(Order*);
     void remove_order(Order *);
     void fill_order(Order*, std::vector<Trade>&, std::vector<uint64_t>&);
-    bool empty();
-    void display_level();
+    bool empty() const;
+    void display_level() const;
 };

@@ -1,11 +1,10 @@
 #include <cstdint>
-#include <stack>
 #include <vector>
 #include <iostream>
 #include <matcha/order.hpp>
 #include <matcha/price_level.hpp>
 
-bool PriceLevel::empty() {
+bool PriceLevel::empty() const {
     return head == nullptr;
 }
 
@@ -58,9 +57,9 @@ void PriceLevel::remove_order(Order *order) {
     order->prev = nullptr;
 }
 
-void PriceLevel::display_level() {
+void PriceLevel::display_level() const {
     std::cout << " [ " << price << " ]  -> ";
-    Order *tmp = head;
+    const Order *tmp = head;
     while(tmp) {
         std::cout << "( " << tmp->qty << ", " << tmp->id << " )";
         if(tmp->next) std::cout << ", ";

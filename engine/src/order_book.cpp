@@ -46,13 +46,9 @@ Status OrderBook::cancel_order(uint64_t order_id) {
 }
 
 void OrderBook::match_order(Order *order, std::vector<Trade> &trades) {
-    uint64_t price;
-    if(order->order_type == OrderType::LIMIT) {
-        price = order->price;
-    }
-    else if(order->order_type == OrderType::MARKET){
-        if(order->side == Side::BUY) price = UINT64_MAX;
-        else price = 0;
+    uint64_t price = order->price;
+    if(order->order_type == OrderType::MARKET) {
+        price = (order->side == Side::BUY) ? UINT64_MAX : 0;
     }
     if(order->side == Side::BUY) {
         auto it = asks.begin();
@@ -97,16 +93,16 @@ Status OrderBook::insert_order(const Order &order, std::vector<Trade> &trades) {
     return Status::Ok;
 }
 
-void OrderBook::display_book() {
+void OrderBook::display_book() const {
      std::cout << " [ price ]  -> ";
         std::cout << "( qty, id )";
     std::cout << "\n";
     std::cout << "BIDS::\n";
-    for(auto &it: bids) {
+    for(const auto &it: bids) {
         it.second.display_level();
     }
     std::cout << "ASKS::\n";
-    for(auto &it: asks) {
+    for(const auto &it: asks) {
         it.second.display_level();
     }
 }

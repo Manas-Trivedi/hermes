@@ -10,9 +10,9 @@ private:
     std::stack<size_t> free_slots;
     std::vector<Order> storage;
     size_t next_free;
-    size_t index_of(Order *order);
+    size_t index_of(const Order *order) const;
 public:
-    Arena(size_t);
+    explicit Arena(size_t);
     Order* allocate();
     void deallocate(Order *);
     bool full() const;

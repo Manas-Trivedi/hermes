@@ -1,7 +1,6 @@
 #include <cstdint>
 #include <cassert>
 #include <vector>
-#include <stack>
 #include <matcha/order.hpp>
 #include <matcha/arena.hpp>
 
@@ -12,7 +11,7 @@ Arena::Arena(size_t capacity)
     assert(capacity > 0);
 }
 
-size_t Arena::index_of(Order *order) {
+size_t Arena::index_of(const Order *order) const {
     assert(order >= storage.data());
     assert(order < storage.data() + storage.size());
     return order - storage.data();
