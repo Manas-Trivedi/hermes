@@ -1,5 +1,5 @@
 #include <cstdint>
-#include <stack>
+#include <vector>
 #include <map>
 #include <iostream>
 #include <matcha/order.hpp>
@@ -18,13 +18,12 @@ const Order* OrderBook::get_order(uint64_t id) const {
     return nullptr;
 }
 
-void OrderBook::drain_filled_orders(std::queue<uint64_t> &matched_orders) {
-    while(!matched_orders.empty()) {
-        uint64_t id = matched_orders.front();
+void OrderBook::drain_filled_orders() {
+    for(uint64_t id : filled_scratch) {
         arena.deallocate(order_lookup.at(id));
         order_lookup.erase(id);
-        matched_orders.pop();
     }
+    filled_scratch.clear();
 }
 
 void OrderBook::cancel_order(uint64_t order_id) {
@@ -43,8 +42,7 @@ void OrderBook::cancel_order(uint64_t order_id) {
     arena.deallocate(order);
 }
 
-void OrderBook::match_order(Order *order) {
-    std::stack<uint64_t> emptyLevels;
+void OrderBook::match_order(Order *order, std::vector<Trade> &trades) {
     uint64_t price;
     if(order->order_type == OrderType::LIMIT) {
         price = order->price;
@@ -56,35 +54,28 @@ void OrderBook::match_order(Order *order) {
     if(order->side == Side::BUY) {
         auto it = asks.begin();
         while(it != asks.end() && it->first <= price && order->qty > 0) {
-            std::queue<uint64_t> matched_orders = it->second.fill_order(order);
-            drain_filled_orders(matched_orders);
-            if(it->second.empty()) emptyLevels.push(it->first);
+            it->second.fill_order(order, trades, filled_scratch);
+            drain_filled_orders();
+            if(it->second.empty()) empty_levels_scratch.push_back(it->first);
             it++;
         }
-        while(!emptyLevels.empty()) {
-            uint64_t key = emptyLevels.top();
-            asks.erase(key);
-            emptyLevels.pop();
-        }
+        for(uint64_t key : empty_levels_scratch) asks.erase(key);
     } else {
         auto it = bids.rbegin();
         while(it != bids.rend() && it->first >= price && order->qty > 0) {
-            std::queue<uint64_t> matched_orders = it->second.fill_order(order);
-            drain_filled_orders(matched_orders);
-            if(it->second.empty()) emptyLevels.push(it->first);
+            it->second.fill_order(order, trades, filled_scratch);
+            drain_filled_orders();
+            if(it->second.empty()) empty_levels_scratch.push_back(it->first);
             it++;
         }
-        while(!emptyLevels.empty()) {
-            uint64_t key = emptyLevels.top();
-            bids.erase(key);
-            emptyLevels.pop();
-        }
+        for(uint64_t key : empty_levels_scratch) bids.erase(key);
     }
+    empty_levels_scratch.clear();
 }
 
-void OrderBook::insert_order(Order &order) {
+void OrderBook::insert_order(Order &order, std::vector<Trade> &trades) {
     if(order.order_type == OrderType::CANCEL) return cancel_order(order.id);
-    match_order(&order);
+    match_order(&order, trades);
     if(order.qty == 0 || order.order_type == OrderType::MARKET) return;
 
     Order *stored = arena.allocate();

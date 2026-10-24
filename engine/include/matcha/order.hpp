@@ -12,6 +12,13 @@ enum class OrderType {
     CANCEL
 };
 
+struct Trade {
+    uint64_t taker_id; // incoming order
+    uint64_t maker_id; // resting order it matched
+    uint64_t price;    // the resting order's price
+    uint64_t qty;
+};
+
 struct Order{
     uint64_t id;
     Side side;

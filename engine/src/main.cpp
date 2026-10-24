@@ -34,10 +34,16 @@ int main() {
     size_t n;
     std::cin >> n;
     OrderBook book(orders);
+    std::vector<Trade> trades;
     for(size_t i = 0; i < n; i++) {
         Order order;
         take_order(order);
-        book.insert_order(order);
+        trades.clear();
+        book.insert_order(order, trades);
+        for(const Trade &t : trades) {
+            std::cout << "TRADE taker=" << t.taker_id << " maker=" << t.maker_id
+                      << " price=" << t.price << " qty=" << t.qty << "\n";
+        }
     }
     book.display_book();
     return 0;
