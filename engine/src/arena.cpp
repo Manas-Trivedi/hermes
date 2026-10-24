@@ -9,6 +9,7 @@ Arena::Arena(size_t capacity)
         next_free(0)
 {
     assert(capacity > 0);
+    free_slots.reserve(capacity);  // can never hold more than every slot
 }
 
 size_t Arena::index_of(const Order *order) const {
@@ -19,8 +20,8 @@ size_t Arena::index_of(const Order *order) const {
 
 Order* Arena::allocate() {
     if(!free_slots.empty()) {
-        size_t idx = free_slots.top();
-        free_slots.pop();
+        size_t idx = free_slots.back();
+        free_slots.pop_back();
         return &storage[idx];
     }
     if(full()) return nullptr;
@@ -29,7 +30,7 @@ Order* Arena::allocate() {
 
 void Arena::deallocate(Order *order) {
     size_t idx = index_of(order);
-    free_slots.push(idx);
+    free_slots.push_back(idx);
 }
 
 bool Arena::full() const {
