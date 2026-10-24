@@ -2,9 +2,14 @@
 #include <vector>
 #include <matcha/order_book.hpp>
 
+static Status try_insert(OrderBook &book, Order &order, std::vector<Trade> &trades) {
+    return book.insert_order(order, trades);
+}
+
+// For tests that expect the order to be accepted.
 static std::vector<Trade> insert(OrderBook &book, Order &order) {
     std::vector<Trade> trades;
-    book.insert_order(order, trades);
+    EXPECT_EQ(try_insert(book, order, trades), Status::Ok);
     return trades;
 }
 
@@ -63,7 +68,8 @@ TEST(CancelTest, UnknownIdIsIgnored) {
     insert(book, o);
 
     Order c = cancel(99);
-    insert(book, c);
+    std::vector<Trade> trades;
+    EXPECT_EQ(try_insert(book, c, trades), Status::UnknownId);
     EXPECT_TRUE(book.contains_order(1));
 }
 
@@ -315,4 +321,45 @@ TEST(TradeTest, MarketSellTradesAtRestingBidPrice) {
     ASSERT_EQ(trades.size(), 1u);
     EXPECT_EQ(trades[0].price, 100u);
     EXPECT_EQ(trades[0].qty, 4u);
+}
+
+TEST(StatusTest, DuplicateIdIsRejectedBeforeAnyMatching) {
+    OrderBook book(10);
+    Order sell = limit(1, Side::SELL, 100, 5);
+    insert(book, sell);
+    Order resting = limit(2, Side::BUY, 90, 5);
+    insert(book, resting);
+
+    // reuses id 2 and would cross the ask if it were allowed to match
+    Order dup = limit(2, Side::BUY, 100, 5);
+    std::vector<Trade> trades;
+    EXPECT_EQ(try_insert(book, dup, trades), Status::DuplicateId);
+    EXPECT_TRUE(trades.empty());
+    EXPECT_EQ(book.get_order(1)->qty, 5u);
+    EXPECT_EQ(book.get_order(2)->qty, 5u);
+}
+
+TEST(StatusTest, FullArenaRejectsNewRestingOrder) {
+    OrderBook book(1);
+    Order a = limit(1, Side::BUY, 100, 5);
+    insert(book, a);
+
+    Order b = limit(2, Side::BUY, 99, 5);
+    std::vector<Trade> trades;
+    EXPECT_EQ(try_insert(book, b, trades), Status::ArenaFull);
+    EXPECT_FALSE(book.contains_order(2));
+    EXPECT_TRUE(trades.empty());
+}
+
+TEST(StatusTest, CrossingOrderStillWorksWhenArenaIsFull) {
+    OrderBook book(1);
+    Order sell = limit(1, Side::SELL, 100, 2);
+    insert(book, sell);  // arena is now full
+
+    // trades 2, which frees the slot, and the remainder of 3 rests in it
+    Order buy = limit(2, Side::BUY, 100, 5);
+    auto trades = insert(book, buy);
+    ASSERT_EQ(trades.size(), 1u);
+    ASSERT_TRUE(book.contains_order(2));
+    EXPECT_EQ(book.get_order(2)->qty, 3u);
 }

@@ -24,7 +24,7 @@ Order* Arena::allocate() {
         free_slots.pop();
         return &storage[idx];
     }
-    assert(!full());
+    if(full()) return nullptr;
     return &storage[next_free++];
 }
 
@@ -34,5 +34,5 @@ void Arena::deallocate(Order *order) {
 }
 
 bool Arena::full() const {
-    return next_free >= storage.size();
+    return free_slots.empty() && next_free >= storage.size();
 }

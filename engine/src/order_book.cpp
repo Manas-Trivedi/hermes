@@ -26,8 +26,8 @@ void OrderBook::drain_filled_orders() {
     filled_scratch.clear();
 }
 
-void OrderBook::cancel_order(uint64_t order_id) {
-    if(!order_lookup.count(order_id)) return;
+Status OrderBook::cancel_order(uint64_t order_id) {
+    if(!order_lookup.count(order_id)) return Status::UnknownId;
     Order *order = order_lookup[order_id];
     Side side = order->side;
     uint64_t price = order->price;
@@ -40,6 +40,7 @@ void OrderBook::cancel_order(uint64_t order_id) {
     }
     order_lookup.erase(order_id);
     arena.deallocate(order);
+    return Status::Ok;
 }
 
 void OrderBook::match_order(Order *order, std::vector<Trade> &trades) {
@@ -73,12 +74,16 @@ void OrderBook::match_order(Order *order, std::vector<Trade> &trades) {
     empty_levels_scratch.clear();
 }
 
-void OrderBook::insert_order(Order &order, std::vector<Trade> &trades) {
+Status OrderBook::insert_order(Order &order, std::vector<Trade> &trades) {
     if(order.order_type == OrderType::CANCEL) return cancel_order(order.id);
+    if(order_lookup.count(order.id)) return Status::DuplicateId;
     match_order(&order, trades);
-    if(order.qty == 0 || order.order_type == OrderType::MARKET) return;
+    if(order.qty == 0 || order.order_type == OrderType::MARKET) return Status::Ok;
 
+    // Capacity is checked after matching on purpose: if the order traded, the
+    // makers it filled freed their slots, so the remainder always has room.
     Order *stored = arena.allocate();
+    if(!stored) return Status::ArenaFull;
     *stored = order;
     order_lookup[stored->id] = stored;
     uint64_t price = stored->price;
@@ -93,6 +98,7 @@ void OrderBook::insert_order(Order &order, std::vector<Trade> &trades) {
         }
         asks.at(price).add_order(stored);
     }
+    return Status::Ok;
 }
 
 void OrderBook::display_book() {

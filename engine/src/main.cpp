@@ -26,6 +26,16 @@ void take_order(Order &order) {
     }
 }
 
+const char* status_name(Status s) {
+    switch(s) {
+        case Status::Ok: return "OK";
+        case Status::DuplicateId: return "DUPLICATE_ID";
+        case Status::ArenaFull: return "ARENA_FULL";
+        case Status::UnknownId: return "UNKNOWN_ID";
+    }
+    return "?";
+}
+
 int main() {
     size_t orders;
     std::cout << "Enter arena size: ";
@@ -39,7 +49,8 @@ int main() {
         Order order;
         take_order(order);
         trades.clear();
-        book.insert_order(order, trades);
+        Status status = book.insert_order(order, trades);
+        if(status != Status::Ok) std::cout << "REJECTED " << status_name(status) << "\n";
         for(const Trade &t : trades) {
             std::cout << "TRADE taker=" << t.taker_id << " maker=" << t.maker_id
                       << " price=" << t.price << " qty=" << t.qty << "\n";
