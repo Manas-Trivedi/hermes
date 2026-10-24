@@ -20,25 +20,27 @@ const Order* OrderBook::get_order(uint64_t id) const {
 
 void OrderBook::drain_filled_orders() {
     for(uint64_t id : filled_scratch) {
-        arena.deallocate(order_lookup.at(id));
-        order_lookup.erase(id);
+        auto it = order_lookup.find(id);
+        arena.deallocate(it->second);
+        order_lookup.erase(it);
     }
     filled_scratch.clear();
 }
 
 Status OrderBook::cancel_order(uint64_t order_id) {
-    if(!order_lookup.count(order_id)) return Status::UnknownId;
-    Order *order = order_lookup[order_id];
-    Side side = order->side;
-    uint64_t price = order->price;
-    if(side == Side::BUY) {
-        bids.at(price).remove_order(order);
-        if(bids.at(price).empty()) bids.erase(price);
+    auto found = order_lookup.find(order_id);
+    if(found == order_lookup.end()) return Status::UnknownId;
+    Order *order = found->second;
+    if(order->side == Side::BUY) {
+        auto level = bids.find(order->price);
+        level->second.remove_order(order);
+        if(level->second.empty()) bids.erase(level);
     } else {
-        asks.at(price).remove_order(order);
-        if(asks.at(price).empty()) asks.erase(price);
+        auto level = asks.find(order->price);
+        level->second.remove_order(order);
+        if(level->second.empty()) asks.erase(level);
     }
-    order_lookup.erase(order_id);
+    order_lookup.erase(found);
     arena.deallocate(order);
     return Status::Ok;
 }
@@ -76,7 +78,7 @@ void OrderBook::match_order(Order *order, std::vector<Trade> &trades) {
 
 Status OrderBook::insert_order(const Order &order, std::vector<Trade> &trades) {
     if(order.order_type == OrderType::CANCEL) return cancel_order(order.id);
-    if(order_lookup.count(order.id)) return Status::DuplicateId;
+    if(contains_order(order.id)) return Status::DuplicateId;
 
     // Match a copy so the caller's order is left untouched; the caller can
     // work out what remains from the trades.
@@ -89,19 +91,9 @@ Status OrderBook::insert_order(const Order &order, std::vector<Trade> &trades) {
     Order *stored = arena.allocate();
     if(!stored) return Status::ArenaFull;
     *stored = incoming;
-    order_lookup[stored->id] = stored;
-    uint64_t price = stored->price;
-    if(stored->side == Side::BUY) {
-        if(!bids.count(price)) {
-            bids.insert({price, PriceLevel(price)});
-        }
-        bids.at(price).add_order(stored);
-    } else {
-        if(!asks.count(price)) {
-            asks.insert({price, PriceLevel(price)});
-        }
-        asks.at(price).add_order(stored);
-    }
+    order_lookup.emplace(stored->id, stored);
+    auto &side = stored->side == Side::BUY ? bids : asks;
+    side.try_emplace(stored->price, stored->price).first->second.add_order(stored);
     return Status::Ok;
 }
 
