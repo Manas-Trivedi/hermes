@@ -14,6 +14,8 @@ FetchContent_MakeAvailable(googletest)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+add_compile_options(-Wall -Wextra)
+
 include_directories(include)
 
 add_library(matcha_lib
