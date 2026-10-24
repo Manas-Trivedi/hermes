@@ -2,12 +2,12 @@
 #include <vector>
 #include <matcha/order_book.hpp>
 
-static Status try_insert(OrderBook &book, Order &order, std::vector<Trade> &trades) {
+static Status try_insert(OrderBook &book, const Order &order, std::vector<Trade> &trades) {
     return book.insert_order(order, trades);
 }
 
 // For tests that expect the order to be accepted.
-static std::vector<Trade> insert(OrderBook &book, Order &order) {
+static std::vector<Trade> insert(OrderBook &book, const Order &order) {
     std::vector<Trade> trades;
     EXPECT_EQ(try_insert(book, order, trades), Status::Ok);
     return trades;
@@ -362,4 +362,19 @@ TEST(StatusTest, CrossingOrderStillWorksWhenArenaIsFull) {
     ASSERT_EQ(trades.size(), 1u);
     ASSERT_TRUE(book.contains_order(2));
     EXPECT_EQ(book.get_order(2)->qty, 3u);
+}
+
+TEST(InsertTest, CallersOrderIsNotModified) {
+    OrderBook book(10);
+    Order sell = limit(1, Side::SELL, 100, 4);
+    insert(book, sell);
+
+    Order buy = limit(2, Side::BUY, 100, 10);
+    auto trades = insert(book, buy);
+
+    EXPECT_EQ(buy.qty, 10u);               // untouched by matching
+    ASSERT_EQ(trades.size(), 1u);
+    EXPECT_EQ(trades[0].qty, 4u);
+    ASSERT_TRUE(book.contains_order(2));
+    EXPECT_EQ(book.get_order(2)->qty, 6u); // the resting remainder
 }

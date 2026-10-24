@@ -10,7 +10,7 @@
 enum class Status {
     Ok,
     DuplicateId,  // an order with this id is already resting
-    ArenaFull,    // no room to rest the order (trades, if any, still stand)
+    ArenaFull,    // no room to rest the order; it made no trades
     UnknownId     // cancel target is not resting in the book
 };
 
@@ -27,7 +27,7 @@ class OrderBook {
     OrderBook(size_t n) : arena(n) {}
     bool contains_order(uint64_t order_id) const;
     const Order* get_order(uint64_t id) const;
-    [[nodiscard]] Status insert_order(Order &order, std::vector<Trade> &trades);
+    [[nodiscard]] Status insert_order(const Order &order, std::vector<Trade> &trades);
     [[nodiscard]] Status cancel_order(uint64_t order_id);
     void display_book();
 };

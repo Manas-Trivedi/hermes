@@ -74,17 +74,21 @@ void OrderBook::match_order(Order *order, std::vector<Trade> &trades) {
     empty_levels_scratch.clear();
 }
 
-Status OrderBook::insert_order(Order &order, std::vector<Trade> &trades) {
+Status OrderBook::insert_order(const Order &order, std::vector<Trade> &trades) {
     if(order.order_type == OrderType::CANCEL) return cancel_order(order.id);
     if(order_lookup.count(order.id)) return Status::DuplicateId;
-    match_order(&order, trades);
-    if(order.qty == 0 || order.order_type == OrderType::MARKET) return Status::Ok;
+
+    // Match a copy so the caller's order is left untouched; the caller can
+    // work out what remains from the trades.
+    Order incoming = order;
+    match_order(&incoming, trades);
+    if(incoming.qty == 0 || incoming.order_type == OrderType::MARKET) return Status::Ok;
 
     // Capacity is checked after matching on purpose: if the order traded, the
     // makers it filled freed their slots, so the remainder always has room.
     Order *stored = arena.allocate();
     if(!stored) return Status::ArenaFull;
-    *stored = order;
+    *stored = incoming;
     order_lookup[stored->id] = stored;
     uint64_t price = stored->price;
     if(stored->side == Side::BUY) {
