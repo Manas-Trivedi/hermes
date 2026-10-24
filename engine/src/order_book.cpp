@@ -98,8 +98,8 @@ void OrderBook::display_book() const {
         std::cout << "( qty, id )";
     std::cout << "\n";
     std::cout << "BIDS::\n";
-    for(const auto &it: bids) {
-        it.second.display_level();
+    for(auto it = bids.rbegin(); it != bids.rend(); ++it) {
+        it->second.display_level();
     }
     std::cout << "ASKS::\n";
     for(const auto &it: asks) {
