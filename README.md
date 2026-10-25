@@ -43,7 +43,7 @@ Hermes is being built in the open, one small step at a time.
 | Stage | What | State |
 |---|---|---|
 | Matching engine | Price-time priority order book with trade reporting and input rejection | Done |
-| Engine interface and scheduler | Drive the book from other processes, release capacity slices | Planned |
+| Engine interface and scheduler | Drive the book from other processes, release capacity slices | Done |
 | Throttled gateway | Mock backend, FIFO baseline, exchange-gated forwarding | Planned |
 | Urgency model | Explainable bid pricing, regenerating credit budgets | Planned |
 | Bidder agents | PR review, support triage, research synthesis | Planned |
@@ -55,7 +55,7 @@ No benchmark numbers yet. They will appear here once the experiment has actually
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine builds and its tests run today.
+Hermes is not usable end to end yet. The matching engine, its Python client and the capacity scheduler run today.
 
 **Requirements**
 
@@ -78,6 +78,14 @@ Needs [uv](https://docs.astral.sh/uv/) and the engine built as above.
 
 ```bash
 uv run pytest
+```
+
+**Watch the market run**
+
+A script releases capacity slices at a fixed rate and throws random bids at them for ten seconds. It prints every release, bid, fill and expiry, then checks that nothing was lost or double counted.
+
+```bash
+uv run python -m experiments.synthetic_bidders
 ```
 
 **Drive the book from the command line**
