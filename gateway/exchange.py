@@ -24,6 +24,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from client import Engine, Trade
+from gateway.events import make_event
 from scheduler import SLICE_ID_BASE, CapacityScheduler
 
 
@@ -101,7 +102,7 @@ class ExchangeGateway:
         on_event=None,
         reserve_price: int = 1,
     ):
-        """`send(request_id)` returns a Reply. `on_event(dict)` sees every step."""
+        """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events)."""
         self._send = send
         self._clock = clock
         self._on_event = on_event or (lambda _: None)
@@ -167,19 +168,19 @@ class ExchangeGateway:
             reply = self._send(task.request_id)
         except Exception as e:
             task.error = repr(e)
-            self._emit("result", task)
+            self._emit("result", task, status=None, error=task.error)
             task._done.set()
             return
         if reply.status == 429:
+            self._emit("rejected", task)  # before requeueing, so the next bid comes after it
             with self._cv:
                 self.wasted_retries += 1
                 self._inbox.append(task)
                 self._cv.notify()
-            self._emit("rejected", task)
             return
         task.status = reply.status
-        self._emit("result", task)
+        self._emit("result", task, status=task.status, error=None)
         task._done.set()
 
     def _emit(self, event: str, task: Task, **fields) -> None:
-        self._on_event({"event": event, "request_id": task.request_id, "t": self._clock(), **fields})
+        self._on_event(make_event(event, "exchange", task, self._clock(), **fields))

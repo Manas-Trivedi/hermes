@@ -23,6 +23,8 @@ from experiments.baselines.dispatcher import RateLimitedDispatcher, Task
 
 
 class PriorityDispatcher(RateLimitedDispatcher):
+    name = "priority"
+
     def __init__(self, limit_per_minute: float, aging_rate: float = 0.0):
         """`aging_rate` is priority points gained per second of waiting."""
         super().__init__(limit_per_minute)

@@ -10,6 +10,8 @@ from experiments.baselines.dispatcher import RateLimitedDispatcher, Task
 
 
 class FifoDispatcher(RateLimitedDispatcher):
+    name = "fifo"
+
     def __init__(self, limit_per_minute: float):
         super().__init__(limit_per_minute)
         self._pending: deque[Task] = deque()

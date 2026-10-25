@@ -10,11 +10,12 @@ import threading
 import time
 
 from experiments.baselines.dispatcher import RateLimitedDispatcher, Task
+from gateway.events import make_event
 
 
 class Gateway:
     def __init__(self, send, dispatcher: RateLimitedDispatcher, clock=time.monotonic, on_event=None):
-        """`send(request_id)` returns a Reply. `on_event(dict)` sees every step."""
+        """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events)."""
         self._send = send
         self._clock = clock
         self._on_event = on_event or (lambda _: None)
@@ -69,19 +70,19 @@ class Gateway:
             reply = self._send(task.request_id)
         except Exception as e:
             task.error = repr(e)
-            self._emit("result", task)
+            self._emit("result", task, status=None, error=task.error)
             task._done.set()
             return
         if reply.status == 429:
+            self._emit("rejected", task)  # before requeueing, so the retry's forward comes after it
             with self._cv:
                 self.wasted_retries += 1
                 self._dispatcher.retry(task, self._clock(), reply.retry_after)
                 self._cv.notify()
-            self._emit("rejected", task)
             return
         task.status = reply.status
-        self._emit("result", task)
+        self._emit("result", task, status=task.status, error=None)
         task._done.set()
 
-    def _emit(self, event: str, task: Task) -> None:
-        self._on_event({"event": event, "request_id": task.request_id, "t": self._clock()})
+    def _emit(self, event: str, task: Task, **fields) -> None:
+        self._on_event(make_event(event, self._dispatcher.name, task, self._clock(), **fields))

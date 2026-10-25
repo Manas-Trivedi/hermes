@@ -28,6 +28,8 @@ class Task:
 
 
 class RateLimitedDispatcher:
+    name = "baseline"  # labels this dispatcher's gateway in the event log
+
     def __init__(self, limit_per_minute: float):
         if limit_per_minute <= 0:
             raise ValueError("limit must be positive")
