@@ -31,17 +31,24 @@ class PriorityDispatcher(RateLimitedDispatcher):
         self._aging_rate = aging_rate
         self._heap: list[tuple[float, int, Task]] = []
         self._seq = count()
-        self._seqs: dict[int, int] = {}  # id(task) -> arrival number, kept across retries
 
     def __len__(self) -> int:
         return len(self._heap)
 
     def _push(self, task: Task) -> None:
         score = task.priority - self._aging_rate * task.enqueued_at
-        heapq.heappush(self._heap, (-score, self._seqs[id(task)], task))
+        heapq.heappush(self._heap, (-score, task.seq, task))
+
+    def cancel(self, task: Task) -> bool:
+        for i, entry in enumerate(self._heap):
+            if entry[2] is task:
+                self._heap.pop(i)
+                heapq.heapify(self._heap)
+                return True
+        return False
 
     def _enqueue(self, task: Task) -> None:
-        self._seqs[id(task)] = next(self._seq)
+        task.seq = next(self._seq)  # kept across retries, so a retry keeps its place
         self._push(task)
 
     def _dequeue(self) -> Task:

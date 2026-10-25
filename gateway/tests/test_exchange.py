@@ -45,11 +45,11 @@ def test_bid_below_the_reserve_is_rejected_instead_of_resting_forever():
             core.submit(Task("a", 4))
 
 
-def run_gateway(gateway_limit, backend_limit, bids):
+def run_gateway(gateway_limit, backend_limit, bids, tolerance=0.02):
     """Real engine, scheduler, mock backend and threads. The first bid takes the
     slice that is resting at start; the rest queue behind it and are ordered."""
     events = []
-    with Engine(arena=1000) as engine, real_sender(backend_limit) as sender:
+    with Engine(arena=1000) as engine, real_sender(backend_limit, tolerance) as sender:
         with ExchangeGateway(sender, engine, gateway_limit, on_event=events.append) as gw:
             first = gw.submit(*bids[0])
             assert first.wait(10)
@@ -59,7 +59,7 @@ def run_gateway(gateway_limit, backend_limit, bids):
 
 
 def test_calls_are_forwarded_in_bid_order_after_they_win_and_pay_what_the_book_says():
-    tasks, gw, events = run_gateway(600, 600, [("first", 5), ("lo", 10), ("hi", 50), ("mid", 30)])
+    tasks, gw, events = run_gateway(600, 600, [("first", 5), ("lo", 10), ("hi", 50), ("mid", 30)], tolerance=0.05)
     assert [t.status for t in tasks] == [200] * 4 and gw.wasted_retries == 0
     sent = [e["request_id"] for e in events if e["event"] == "forward"]
     assert sent == ["first", "hi", "mid", "lo"]
@@ -77,3 +77,30 @@ def test_call_the_backend_rejects_after_winning_is_bid_again_and_counted():
     assert [t.status for t in tasks] == [200] * 3
     assert gw.wasted_retries >= 1
     assert sum(t.attempts for t in tasks) == 3 + gw.wasted_retries
+
+
+def test_cancelled_bid_leaves_the_book_and_cancelling_after_a_fill_is_a_no_op():
+    with Engine(arena=100) as engine:
+        core = ExchangeCore(engine, limit_per_minute=10, start=106.0)
+        gone, won = Task("gone", 10), Task("won", 50)
+        core.submit(gone)
+        core.submit(won)
+        assert core.cancel(gone) is True and core.cancel(gone) is False
+        [fill] = core.tick(106.0)
+        assert fill.task is won  # the cancelled bid is not there to be hit
+        assert core.cancel(won) is False  # it already won, so its call goes out
+        assert core.tick(112.0) == []
+
+
+def test_cancelled_task_is_never_sent_and_its_waiter_wakes():
+    events = []
+    with Engine(arena=1000) as engine, real_sender(600) as sender:
+        with ExchangeGateway(sender, engine, 600, on_event=events.append) as gw:
+            first = gw.submit("first", 5)  # takes the slice resting at start
+            assert first.wait(10)
+            dropped, kept = gw.submit("dropped", 10), gw.submit("kept", 20)
+            assert gw.cancel(dropped) is True
+            assert dropped.wait(1) and dropped.cancelled and dropped.status is None
+            assert kept.wait(10) and kept.status == 200
+    sent = [e["request_id"] for e in events if e["event"] == "forward"]
+    assert sent == ["first", "kept"]

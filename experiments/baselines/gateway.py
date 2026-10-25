@@ -42,6 +42,16 @@ class Gateway:
             self._cv.notify()
         return task
 
+    def cancel(self, task: Task) -> bool:
+        """Take a task out of the queue. False if it was already sent or is done."""
+        with self._cv:
+            if not self._dispatcher.cancel(task):
+                return False
+        task.cancelled = True
+        self._emit("cancelled", task)
+        task._done.set()
+        return True
+
     def _loop(self) -> None:
         with self._cv:
             while not self._stopped:

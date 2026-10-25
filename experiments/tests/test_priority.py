@@ -41,6 +41,30 @@ def test_rejected_task_is_retried_ahead_of_everything_that_arrived_since():
     assert d.pop_due(6.0) is first
 
 
+def test_cancel_removes_a_queued_task_and_keeps_priority_order_of_the_rest():
+    d = PriorityDispatcher(limit_per_minute=10)
+    low, top, mid = Task("low", 1), Task("top", 9), Task("mid", 5)
+    for t in (low, top, mid):
+        d.submit(t, 0.0)
+    assert d.cancel(top) is True and d.cancel(top) is False
+    assert drain(d) == ["mid", "low"]
+
+
+def test_gateway_cancel_keeps_a_queued_task_from_ever_being_sent():
+    events = []
+    with real_sender(backend_limit=600) as sender:
+        with Gateway(sender, PriorityDispatcher(600), on_event=events.append) as gw:
+            blocker = gw.submit("blocker", 0)
+            while not any(e["event"] == "forward" for e in events):
+                time.sleep(0.001)
+            dropped, kept = gw.submit("dropped", 9), gw.submit("kept", 1)
+            assert gw.cancel(dropped) is True
+            assert dropped.wait(1) and dropped.cancelled
+            assert blocker.wait(10) and kept.wait(10)
+    sent = [e["request_id"] for e in events if e["event"] == "forward"]
+    assert sent == ["blocker", "kept"]
+
+
 def test_gateway_forwards_by_priority_not_arrival():
     events = []
     with real_sender(backend_limit=600) as sender:

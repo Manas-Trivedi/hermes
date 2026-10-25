@@ -54,3 +54,13 @@ def test_gateway_that_sends_too_fast_retries_through_429s_and_counts_them():
     assert [t.status for t in tasks] == [200] * 3
     assert gw.wasted_retries >= 1
     assert sum(t.attempts for t in tasks) == 3 + gw.wasted_retries
+
+
+def test_cancel_removes_a_queued_task_and_keeps_the_order_of_the_rest():
+    d = FifoDispatcher(limit_per_minute=10)
+    a, b, c = ids("a", "b", "c")
+    for t in (a, b, c):
+        d.submit(t, 0.0)
+    assert d.cancel(b) is True and d.cancel(b) is False
+    assert d.pop_due(0.0) is a
+    assert d.pop_due(6.0) is c

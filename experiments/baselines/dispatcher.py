@@ -16,7 +16,9 @@ class Task:
         self.request_id = request_id
         self.priority = priority  # higher is more urgent; FIFO ignores it
         self.enqueued_at = 0.0
+        self.seq = 0  # arrival number, assigned by a dispatcher that needs one
         self.attempts = 0
+        self.cancelled = False
         self.status: int | None = None  # final HTTP status once done
         self.error: str | None = None  # set if sending raised
         self._done = threading.Event()
@@ -53,6 +55,10 @@ class RateLimitedDispatcher:
         if not len(self):
             return None
         return max(0.0, self._next_send - now)
+
+    def cancel(self, task: Task) -> bool:
+        """Remove a queued task. False if it is not queued (already sent, or cancelled)."""
+        raise NotImplementedError
 
     def __len__(self) -> int:
         raise NotImplementedError

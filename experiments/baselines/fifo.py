@@ -17,6 +17,13 @@ class FifoDispatcher(RateLimitedDispatcher):
     def __len__(self) -> int:
         return len(self._pending)
 
+    def cancel(self, task: Task) -> bool:
+        try:
+            self._pending.remove(task)
+        except ValueError:
+            return False
+        return True
+
     def _enqueue(self, task: Task) -> None:
         self._pending.append(task)
 

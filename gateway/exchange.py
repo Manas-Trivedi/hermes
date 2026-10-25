@@ -33,6 +33,7 @@ class Task:
         self.bid = bid  # price offered, in ticks
         self.paid: int | None = None  # price of the fill that won the latest slice
         self.attempts = 0  # calls sent to the backend
+        self.cancelled = False
         self.status: int | None = None  # final HTTP status once done
         self.error: str | None = None  # set if sending raised
         self._done = threading.Event()
@@ -67,6 +68,16 @@ class ExchangeCore:
         self._next_bid_id += 1
         self._resting[bid_id] = task
         return self._fills(self._engine.buy(bid_id, task.bid, 1))
+
+    def cancel(self, task: Task) -> bool:
+        """Take the task's bid out of the book. False if it has no bid in the book,
+        which means it already won and its call is on the way."""
+        for bid_id, resting in self._resting.items():
+            if resting is task:
+                self._engine.cancel(bid_id)
+                del self._resting[bid_id]
+                return True
+        return False
 
     def tick(self, now: float) -> list[Fill]:
         """Release and expire slices; returns the bids a new slice reached."""
@@ -118,6 +129,20 @@ class ExchangeGateway:
             self._inbox.append(task)
             self._cv.notify()
         return task
+
+    def cancel(self, task: Task) -> bool:
+        """Withdraw a task that has not won yet. False if it already won (the call
+        is going out) or is done. The lock serializes this with the exchange thread,
+        so a bid is either still in the book here or already filled."""
+        with self._cv:
+            if task in self._inbox:
+                self._inbox.remove(task)
+            elif not self._core.cancel(task):
+                return False
+        task.cancelled = True
+        self._emit("cancelled", task)
+        task._done.set()
+        return True
 
     def _loop(self) -> None:
         with self._cv:
