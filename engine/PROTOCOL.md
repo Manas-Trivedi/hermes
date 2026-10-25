@@ -7,7 +7,7 @@ The engine is driven over stdin and stdout by a single client that spawns it as 
 - Lines end with `\n`. Fields are separated by exactly one space. Commands are upper case and case sensitive.
 - Numbers are unsigned decimal integers that fit in 64 bits. No sign, no leading `+`, no decimal point. Prices are integer ticks.
 - A line is at most 128 bytes and has at most 4 fields. Longer input is rejected with `ERR BAD_COMMAND`.
-- Order ids are chosen by the client and must be unique among resting orders. Bids and slices share one id space.
+- Order ids are chosen by the client and must be unique among resting orders. Bids and slices share one id space. By convention the capacity scheduler numbers its slices from 2^32 upwards, so bidders must use ids below that. The engine does not enforce this.
 - Price and quantity must be at least 1. The server enforces this; the matching core does not.
 - stderr is for diagnostics only and is never part of the protocol.
 
