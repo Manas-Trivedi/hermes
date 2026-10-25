@@ -26,7 +26,11 @@ Every agentic system shares one scarce resource: LLM API rate limits, GPU minute
 
 Hermes treats capacity as an asset and runs an exchange for it. Throttled capacity is released in fixed time slices. Agents bid for the next slice with a price derived from real urgency: deadline slack, whether a user is waiting, how long the task has already queued. The same price-time-priority matching used by stock exchanges clears the book, and a gateway only forwards an LLM call once that call has won a slice.
 
-The claim to prove, with numbers: **market-based allocation beats naive rate limiting** on completion time, tail latency, failures and wasted retries, on identical workloads.
+The claim to prove, with numbers: **market-based allocation beats both naive rate limiting and priority scheduling with aging** on completion time, tail latency, failures and wasted retries, on identical workloads.
+
+## What it will be
+
+The goal is a service you can deploy, not a demo. Hermes will be a drop-in proxy that speaks the OpenAI chat API and sits in front of your LLM provider. Point your agents' base URL at it and nothing else in the agents changes. It will run from a Docker image, configured by a file, with API keys and credit budgets per team. This is the target and none of the service layer is built yet; the status table below says what exists.
 
 ## How it works
 
@@ -34,7 +38,7 @@ The claim to prove, with numbers: **market-based allocation beats naive rate lim
 2. Each agent task is priced by an interpretable urgency model and enters the book as a bid.
 3. The matching engine gives the slice to the highest bid. Ties go to the earliest arrival.
 4. The gateway forwards the winning call to the model and holds back everything else.
-5. A live dashboard shows the book, the fills and each agent's queue, and an experiment runner replays one workload under FIFO and under the exchange to compare the two.
+5. A live dashboard shows the book, the fills and each agent's queue, and an experiment runner replays one workload under FIFO, under priority scheduling with aging, and under the exchange to compare them.
 
 ## Status
 
@@ -44,12 +48,13 @@ Hermes is being built in the open, one small step at a time.
 |---|---|---|
 | Matching engine | Price-time priority order book with trade reporting and input rejection | Done |
 | Engine interface and scheduler | Drive the book from other processes, release capacity slices | Done |
-| Throttled gateway | Mock backend, FIFO baseline, exchange-gated forwarding | Planned |
+| Throttled gateway | Mock backend, FIFO and priority baselines, exchange-gated forwarding | In progress (mock backend done) |
 | Urgency model | Explainable bid pricing, regenerating credit budgets | Planned |
 | Bidder agents | PR review, support triage, research synthesis | Planned |
 | Persistence and live feed | Event storage and a WebSocket stream | Planned |
-| Dashboard | Live order book, fills, naive vs exchange comparison | Planned |
-| Experiment | Same workload, two allocation strategies, published results | Planned |
+| Dashboard | Live order book, fills, FIFO vs priority vs exchange comparison | Planned |
+| Experiment | Same workload, three allocation strategies, published results | Planned |
+| Deployable service | OpenAI-compatible proxy, token-weighted capacity, API keys and budgets per team, restart safety, Docker image | Planned |
 
 No benchmark numbers yet. They will appear here once the experiment has actually been run.
 
