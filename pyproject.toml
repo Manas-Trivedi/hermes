@@ -13,8 +13,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["client*", "scheduler*", "experiments*"]
+include = ["client*", "scheduler*", "gateway*", "experiments*"]
 
 [tool.pytest.ini_options]
-testpaths = ["client/tests", "scheduler/tests", "experiments/tests"]
+testpaths = ["client/tests", "scheduler/tests", "gateway/tests", "experiments/tests"]
 pythonpath = ["."]

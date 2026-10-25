@@ -2,7 +2,7 @@ import threading
 from contextlib import contextmanager
 
 from experiments.mock_backend import MockBackend, make_server
-from experiments.baselines import HttpSender
+from gateway import HttpSender
 
 
 @contextmanager
