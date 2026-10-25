@@ -48,7 +48,7 @@ Hermes is being built in the open, one small step at a time.
 |---|---|---|
 | Matching engine | Price-time priority order book with trade reporting and input rejection | Done |
 | Engine interface and scheduler | Drive the book from other processes, release capacity slices | Done |
-| Throttled gateway | Mock backend, FIFO and priority baselines, exchange-gated forwarding | In progress (mock backend done) |
+| Throttled gateway | Mock backend, FIFO and priority baselines, exchange-gated forwarding | In progress (mock backend and FIFO baseline done) |
 | Urgency model | Explainable bid pricing, regenerating credit budgets | Planned |
 | Bidder agents | PR review, support triage, research synthesis | Planned |
 | Persistence and live feed | Event storage and a WebSocket stream | Planned |
