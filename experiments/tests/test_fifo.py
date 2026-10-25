@@ -1,7 +1,5 @@
-import threading
-
-from experiments.mock_backend import MockBackend, make_server
-from experiments.baselines import FifoDispatcher, FifoGateway, HttpSender, Task
+from experiments.baselines import FifoDispatcher, Gateway, Task
+from experiments.tests.helpers import real_sender
 
 
 def ids(*names):
@@ -12,7 +10,7 @@ def test_dispatcher_releases_in_arrival_order_one_per_interval():
     d = FifoDispatcher(limit_per_minute=10)  # one send per 6 seconds
     a, b, c = ids("a", "b", "c")
     for t in (a, b, c):
-        d.submit(t)
+        d.submit(t, 0.0)
     assert d.pop_due(0.0) is a
     assert d.pop_due(0.0) is None and d.wake_in(0.0) == 6.0
     assert d.pop_due(5.9) is None
@@ -24,8 +22,8 @@ def test_dispatcher_releases_in_arrival_order_one_per_interval():
 def test_rejected_task_keeps_its_place_and_holds_all_sends_for_retry_after():
     d = FifoDispatcher(limit_per_minute=10)
     a, b = ids("a", "b")
-    d.submit(a)
-    d.submit(b)
+    d.submit(a, 0.0)
+    d.submit(b, 0.0)
     assert d.pop_due(0.0) is a
     d.retry(a, now=1.0, retry_after=10.0)  # longer than the 6s interval
     assert d.pop_due(10.9) is None  # nothing, not even a, until 1 + 10
@@ -34,24 +32,13 @@ def test_rejected_task_keeps_its_place_and_holds_all_sends_for_retry_after():
 
 
 def run_gateway(gateway_limit, backend_limit, n):
-    """Real mock backend and real threads; returns (tasks, gateway, events).
-
-    The backend forgives 20ms of early arrival: each send is a fresh thread and
-    connection, so two sends exactly one interval apart can arrive slightly closer.
-    """
-    backend = MockBackend(backend_limit, seed=1, median_latency=0.001, sigma=0.0, tolerance=0.02)
-    server = make_server(backend)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    """Real mock backend and real threads; returns (tasks, gateway, events)."""
     events = []
-    sender = HttpSender(f"http://127.0.0.1:{server.server_port}/v1/complete")
-    try:
-        with FifoGateway(sender, gateway_limit, on_event=events.append) as gw:
+    with real_sender(backend_limit) as sender:
+        with Gateway(sender, FifoDispatcher(gateway_limit), on_event=events.append) as gw:
             tasks = [gw.submit(f"r{i}") for i in range(n)]
             assert all(t.wait(10) for t in tasks)
-        return tasks, gw, events
-    finally:
-        server.shutdown()
-        server.server_close()
+    return tasks, gw, events
 
 
 def test_matched_limits_forward_in_order_without_a_single_429():
