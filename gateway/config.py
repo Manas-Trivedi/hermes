@@ -10,6 +10,7 @@
     tokens_per_minute = 90000        # optional
     default_max_tokens = 1024        # output allowance for a request that sets none
     max_rate_limit_retries = 3       # provider 429s retried per request before the client gets the 429
+    adaptive = true                  # slow down when the provider returns 429, recover as calls succeed
 
     [server]                         # optional
     host = "127.0.0.1"
@@ -53,6 +54,7 @@ class Config:
     tokens_per_minute: float | None = None
     default_max_tokens: int = 1024
     max_rate_limit_retries: int = 3
+    adaptive: bool = True
     timeout_seconds: float = 120.0
     host: str = "127.0.0.1"
     port: int = 8080
@@ -75,6 +77,12 @@ def _positive(value, name: str, kind=(int, float)):
 def _non_negative(value, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ConfigError(f"{name} must be a whole number, 0 or more")
+    return value
+
+
+def _boolean(value, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{name} must be true or false")
     return value
 
 
@@ -111,6 +119,7 @@ def load(path, environ=os.environ) -> Config:
         tokens_per_minute=None if "tokens_per_minute" not in limits else _positive(limits["tokens_per_minute"], "limits.tokens_per_minute"),
         default_max_tokens=_positive(limits.get("default_max_tokens", 1024), "limits.default_max_tokens", int),
         max_rate_limit_retries=_non_negative(limits.get("max_rate_limit_retries", 3), "limits.max_rate_limit_retries"),
+        adaptive=_boolean(limits.get("adaptive", True), "limits.adaptive"),
         timeout_seconds=_positive(upstream.get("timeout_seconds", 120.0), "upstream.timeout_seconds"),
         host=server.get("host", "127.0.0.1"),
         port=_positive(server.get("port", 8080), "server.port", int),

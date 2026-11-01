@@ -115,3 +115,58 @@ def test_the_request_limit_still_holds_when_tokens_are_small(engine):
 def test_a_non_positive_token_limit_is_rejected(engine):
     with pytest.raises(ValueError):
         CapacityScheduler(engine, LIMIT, start=0, tokens_per_minute=0)
+
+
+def adaptive(engine, **kw):
+    return CapacityScheduler(engine, LIMIT, start=0, adaptive=True, **kw)  # a slice every 2s
+
+
+def test_a_429_halves_the_rate_and_pushes_the_next_slice_out_by_the_longer_interval(engine):
+    sched = adaptive(engine)
+    sched.tick(0)
+    sched.rejected(now=1.0)
+    assert sched.scale == 0.5 and sched.interval == 4.0
+    assert sched.tick(4.9).released == [] and len(sched.tick(5.0).released) == 1  # 1.0 + 4.0
+
+
+def test_the_several_429s_of_one_burst_cut_once_and_a_later_429_cuts_again(engine):
+    sched = adaptive(engine)
+    for _ in range(3):
+        sched.rejected(now=10.0)
+    assert sched.scale == 0.5
+    sched.rejected(now=14.0)  # a whole new interval later
+    assert sched.scale == 0.25
+
+
+def test_retry_after_holds_releases_even_when_the_rate_is_already_cut(engine):
+    sched = adaptive(engine)
+    sched.rejected(now=0.0, retry_after=30.0)
+    sched.rejected(now=0.5, retry_after=5.0)  # a shorter one does not shorten the hold
+    assert sched.next_deadline() == 30.0
+
+
+def test_successes_climb_back_a_little_at_a_time_never_past_the_configured_rate_and_the_floor_holds(engine):
+    sched = adaptive(engine)
+    for i in range(10):
+        sched.rejected(now=100.0 * i)
+    assert sched.scale == 0.1
+    for _ in range(10):
+        sched.succeeded()
+    assert sched.scale == pytest.approx(0.3)
+    for _ in range(100):
+        sched.succeeded()
+    assert sched.scale == 1.0
+
+
+def test_without_adaptive_nothing_moves(engine):
+    sched = CapacityScheduler(engine, LIMIT, start=0)
+    sched.rejected(now=1.0, retry_after=60.0)
+    sched.succeeded()
+    assert sched.scale == 1.0 and sched.next_deadline() == 0
+
+
+def test_the_token_rate_slows_with_the_request_rate(engine):
+    sched = adaptive(engine, tokens_per_minute=600)  # 10 tokens a second
+    sched.rejected(now=0.0)  # half: 5 tokens a second
+    sched.charge(50, now=10.0)
+    assert sched.next_deadline() == 20.0

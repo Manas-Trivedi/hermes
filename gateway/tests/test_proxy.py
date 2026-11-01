@@ -331,3 +331,21 @@ def test_a_provider_that_keeps_saying_429_is_retried_a_few_times_then_the_client
         assert len(calls) == 3  # the first try and two retries
 
     run(scenario)
+
+
+def test_a_retry_after_date_does_not_break_the_retry_and_slows_the_exchange_down():
+    calls, events = [], []
+
+    async def provider(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return web.Response(status=429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})  # a date, not seconds
+        return web.json_response({"ok": True})
+
+    async def scenario():
+        async with running(provider, limit=600) as (client, url):
+            async with client.post(url, json=CHAT) as r:
+                assert r.status == 200
+        assert len(calls) == 2
+
+    run(scenario)

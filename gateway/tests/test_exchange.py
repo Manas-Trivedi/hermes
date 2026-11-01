@@ -241,3 +241,18 @@ def test_through_the_gateway_calls_are_spaced_by_their_tokens_not_just_the_reque
             assert all(t.wait(10) for t in tasks)
     sent = [e["t"] for e in events if e["event"] == "forward"]
     assert len(sent) == 3 and all(b - a >= 0.55 for a, b in zip(sent, sent[1:]))  # 3 tokens = 0.6s, against 0.1s from the request rate
+
+
+def test_a_backend_stricter_than_the_configured_limit_is_found_instead_of_hammered():
+    def waste(adaptive):
+        with Engine(arena=1000) as engine, real_sender(120, 0.0) as sender:  # the backend really allows a call every 0.5s
+            with ExchangeGateway(sender, engine, 600, adaptive=adaptive) as gw:  # configured for one every 0.1s
+                tasks = [gw.submit(f"t{i}", 5) for i in range(8)]
+                assert all(t.wait(30) for t in tasks)
+            return gw.wasted_retries, [t.status for t in tasks], gw._core.rate_scale
+
+    fixed, statuses, scale = waste(False)
+    assert statuses == [200] * 8 and scale == 1.0
+    learned, statuses, scale = waste(True)
+    assert statuses == [200] * 8 and scale < 0.5
+    assert learned < fixed / 2  # the point of adapting, with a wide margin

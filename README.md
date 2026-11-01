@@ -239,6 +239,10 @@ With tenants listed, every request must carry `Authorization: Bearer <api key>` 
 
 All are optional and are removed before the call goes to the provider. A provider 429 is retried behind the scenes a few times (`max_rate_limit_retries`, default 3), then the client gets the provider's own 429 and body, so a quota that cannot recover does not loop forever. A request that cannot be priced gets a 400, an unreachable provider a 502 and a provider that stays silent past `timeout_seconds` a 504, all in OpenAI's error format. With tenants, a provider 401 or 403 means the proxy's own key is wrong, so the client gets a 502 instead. A client that hangs up while its call waits has its bid withdrawn, and one that leaves mid-reply stops the upstream read.
 
+## When the provider is stricter than you thought
+
+Provider limits are not always known, and they move. With `adaptive = true` (the proxy's default) every real 429 from the provider halves the release rate, at most once per interval so one burst of limiting counts once, and holds releases for its `Retry-After`. Each call that gets through earns back 2% of the configured rate, up to the configured rate, and the rate never falls below a tenth of it. It is the additive-increase, multiplicative-decrease rule TCP uses: the limit is found by being rejected now and then, and the slow climb keeps that rare. In a test where the configured limit was five times the provider's, eight calls cost 32 wasted retries with a fixed rate and 3 with the adaptive one. The experiment gateways are not adaptive, so the results do not depend on it.
+
 ## Recording and watching a run
 
 Every gateway reports each step of a request's life (request, bid, fill, forward, rejected, result, cancelled) as an event. Two listeners can be attached to any gateway, on their own or together:

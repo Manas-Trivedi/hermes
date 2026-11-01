@@ -13,8 +13,23 @@ token rate, and no slice is released while any is owed, so the release rate is
 whichever of the request limit and the token limit is stricter. A slice stays
 one request; a large request does not pay more for it, it makes the next slice
 wait longer.
+
+Adaptive: with `adaptive=True` the provider's own limits can be lower than the
+configured ones, or move. The caller reports each real 429 (rejected) and each
+call that was not one (succeeded). A 429 halves the rate, at most once per
+interval so that the several calls a single burst of limiting rejects count
+once, holds releases for the provider's Retry-After, and a success earns back
+2% of the configured rate, up to the configured rate. It is additive increase
+and multiplicative decrease, as in TCP: it finds the limit by being rejected
+now and then, and a small climb keeps those rejections rare. The rate never
+falls below a tenth of the configured one. The token rate scales with it.
 """
 
+CUT = 0.5  # share of the rate kept after a 429
+CLIMB = 0.02  # share of the configured rate won back by each success
+FLOOR = 0.1  # lowest share of the configured rate
+
+import math
 from dataclasses import dataclass, field
 
 from client import Engine, Trade, UnknownId
@@ -41,6 +56,7 @@ class CapacityScheduler:
         reserve_price: int = 1,
         burst: int = 1,
         tokens_per_minute: float | None = None,
+        adaptive: bool = False,
     ):
         """Release one slice every 60/limit seconds, the first at `start`.
 
@@ -51,14 +67,41 @@ class CapacityScheduler:
         if limit_per_minute <= 0 or burst < 1 or reserve_price < 1 or (tokens_per_minute is not None and tokens_per_minute <= 0):
             raise ValueError("limits must be positive, burst and reserve at least 1")
         self._engine = engine
-        self.interval = 60.0 / limit_per_minute
+        self._limit = limit_per_minute
+        self._burst = burst
+        self._adaptive = adaptive
+        self.scale = 1.0  # share of the configured rate in use now; below 1 only when adaptive
+        self._paused_until = start
+        self._last_cut = -math.inf
         self._reserve = reserve_price
-        self._ttl = burst * self.interval
         self._next_release = start
-        self._token_rate = None if tokens_per_minute is None else tokens_per_minute / 60.0
+        self._base_token_rate = None if tokens_per_minute is None else tokens_per_minute / 60.0
         self._tokens_repaid_at = start  # when the tokens charged so far are paid off
         self._next_id = SLICE_ID_BASE
         self._open: list[tuple[int, float]] = []  # (slice id, expires at), oldest first
+
+    @property
+    def interval(self) -> float:
+        return 60.0 / (self._limit * self.scale)
+
+    @property
+    def _token_rate(self) -> float | None:
+        return None if self._base_token_rate is None else self._base_token_rate * self.scale
+
+    def rejected(self, now: float, retry_after: float = 0.0) -> None:
+        """The provider answered a call with a real 429. Does nothing unless adaptive."""
+        if not self._adaptive:
+            return
+        self._paused_until = max(self._paused_until, now + retry_after)
+        if now >= self._last_cut + self.interval:
+            self.scale = max(FLOOR, self.scale * CUT)
+            self._last_cut = now
+            self._next_release = max(self._next_release, now + self.interval)  # the new, longer interval starts now
+
+    def succeeded(self) -> None:
+        """A call went through (anything but a 429). Does nothing unless adaptive."""
+        if self._adaptive:
+            self.scale = min(1.0, self.scale + CLIMB)
 
     def charge(self, tokens: int, now: float) -> None:
         """A request using `tokens` has won a slice. Does nothing without a token limit."""
@@ -66,7 +109,7 @@ class CapacityScheduler:
             self._tokens_repaid_at = max(self._tokens_repaid_at, now) + tokens / self._token_rate
 
     def _release_at(self) -> float:
-        return max(self._next_release, self._tokens_repaid_at)
+        return max(self._next_release, self._tokens_repaid_at, self._paused_until)
 
     def next_deadline(self) -> float:
         """The earliest time tick() has anything to do."""
@@ -100,4 +143,4 @@ class CapacityScheduler:
         result.released.append(slice_id)
         result.trades.extend(trades)
         if not trades:  # a quantity-1 slice that traded is gone
-            self._open.append((slice_id, now + self._ttl))
+            self._open.append((slice_id, now + self._burst * self.interval))

@@ -34,6 +34,10 @@ spends again.
 Tokens: given `tokens_per_minute`, a task carries an estimate of its tokens
 (gateway.tokens), and every win is charged to the scheduler, which then holds
 back the next slice until the tokens are repaid at that rate (scheduler.capacity).
+
+Adaptive: with `adaptive=True` every real 429 from the backend slows the release
+rate and every other answer lets it recover (scheduler.capacity), so a provider
+whose limit is lower than configured, or changes, is found rather than hammered.
 """
 
 import threading
@@ -71,11 +75,12 @@ class Fill:
 
 class ExchangeCore:
     def __init__(
-        self, engine: Engine, limit_per_minute: float, start: float, reserve_price: int = 1, tokens_per_minute: float | None = None
+        self, engine: Engine, limit_per_minute: float, start: float, reserve_price: int = 1, tokens_per_minute: float | None = None,
+        adaptive: bool = False,
     ):
         self._engine = engine
         self._scheduler = CapacityScheduler(
-            engine, limit_per_minute, start=start, reserve_price=reserve_price, tokens_per_minute=tokens_per_minute
+            engine, limit_per_minute, start=start, reserve_price=reserve_price, tokens_per_minute=tokens_per_minute, adaptive=adaptive
         )
         self._reserve = reserve_price
         self._next_bid_id = 1
@@ -121,6 +126,17 @@ class ExchangeCore:
         """Release and expire slices; returns the bids a new slice reached."""
         return self._fills(self._scheduler.tick(now).trades)
 
+    @property
+    def rate_scale(self) -> float:
+        """Share of the configured rate in use now (1 unless adaptive)."""
+        return self._scheduler.scale
+
+    def rejected(self, now: float, retry_after: float = 0.0) -> None:
+        self._scheduler.rejected(now, retry_after)
+
+    def succeeded(self) -> None:
+        self._scheduler.succeeded()
+
     def charge(self, fills: list[Fill], now: float) -> None:
         """Charge the wins' tokens to the scheduler. Call it right after the fills are seen."""
         for fill in fills:
@@ -147,13 +163,14 @@ class ExchangeGateway:
         reprice_interval: float = 1.0,
         budgets=None,
         tokens_per_minute: float | None = None,
+        adaptive: bool = False,
     ):
         """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events).
         `rescore(task, now)` returns the price a resting task should offer now; see Aging above."""
         self._send = send
         self._clock = clock
         self._on_event = on_event or (lambda _: None)
-        self._core = ExchangeCore(engine, limit_per_minute, start=clock(), reserve_price=reserve_price, tokens_per_minute=tokens_per_minute)
+        self._core = ExchangeCore(engine, limit_per_minute, start=clock(), reserve_price=reserve_price, tokens_per_minute=tokens_per_minute, adaptive=adaptive)
         self._rescore = rescore
         self._budgets = budgets
         self._reserve = reserve_price
@@ -283,13 +300,20 @@ class ExchangeGateway:
             self._emit("result", task, status=None, error=task.error)
             task._done.set()
             return
-        if reply.status == 429 and reply.retry:
-            self._emit("rejected", task)  # before requeueing, so the next bid comes after it
+        if reply.status == 429:
             with self._cv:
-                self.wasted_retries += 1
-                self._inbox.append(task)
-                self._cv.notify()
-            return
+                self._core.rejected(self._clock(), reply.retry_after)  # even a final 429 says the provider is limiting
+                self._cv.notify()  # the next release time may have moved
+            if reply.retry:
+                self._emit("rejected", task)  # before requeueing, so the next bid comes after it
+                with self._cv:
+                    self.wasted_retries += 1
+                    self._inbox.append(task)
+                    self._cv.notify()
+                return
+        else:
+            with self._cv:
+                self._core.succeeded()
         task.status = reply.status
         self._emit("result", task, status=task.status, error=None)
         task._done.set()
