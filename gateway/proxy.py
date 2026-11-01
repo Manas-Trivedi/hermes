@@ -36,6 +36,11 @@ slows the release rate (`adaptive`, scheduler.capacity). In tenant
 mode the credentials upstream are the proxy's own, so a provider 401 or 403 is
 our fault, not the client's, and becomes a 502.
 
+Health and metrics: GET /health says ok, degraded (still serving, but events
+are not being stored or balances not saved) or, with a 503, down. GET /metrics
+is Prometheus text (gateway.metrics); with `metrics_token` set it needs that
+token as a bearer token, because it names the tenants and their traffic.
+
 Restarts: with a database, every event is stored (the process's lifetime is
 one run called "proxy"), each tenant's credit balance is saved every few seconds
 and on shutdown, and the next start picks the balances up and lets them keep
@@ -62,6 +67,7 @@ from aiohttp import web
 from client import Engine
 from gateway.config import Config, ConfigError, hash_key, load
 from gateway.exchange import ExchangeGateway
+from gateway.metrics import Metrics
 from gateway.sender import Reply
 from gateway.tokens import estimate_tokens
 from pricing import AgentConfig, Budgets, Scorer, TaskMeta
@@ -146,7 +152,8 @@ class Proxy:
                  default_max_tokens: int = 1024, scorer: Scorer | None = None, on_event=None, clock=time.monotonic,
                  keys: dict | None = None, upstream_key: str | None = None, pool: float | None = None, cap_seconds: float = 60.0,
                  upstream_timeout: float = 120.0, max_rate_limit_retries: int = 3,
-                 adaptive: bool = True, database: str | None = None, balance_save_seconds: float = 5.0):
+                 adaptive: bool = True, database: str | None = None, balance_save_seconds: float = 5.0,
+                 metrics_token: str | None = None):
         """`keys` maps the sha256 of an API key to its Tenant (gateway.config); without it the proxy is open."""
         self._upstream = upstream
         self._engine = engine
@@ -159,6 +166,9 @@ class Proxy:
         self._upstream_timeout = upstream_timeout
         self._max_retries = max_rate_limit_retries
         self._adaptive = adaptive
+        self._metrics = Metrics()
+        self._metrics_token = metrics_token
+        self._balances_saved = True  # whether the latest save worked
         self._database = database
         self._balance_save_seconds = balance_save_seconds
         self._writer: EventWriter | None = None
@@ -181,11 +191,14 @@ class Proxy:
         return cls(config.upstream_url, engine, config.requests_per_minute, config.tokens_per_minute, config.default_max_tokens,
                    keys=config.keys, upstream_key=config.upstream_key, pool=config.pool, cap_seconds=config.cap_seconds,
                    upstream_timeout=config.timeout_seconds, max_rate_limit_retries=config.max_rate_limit_retries, adaptive=config.adaptive,
-                   database=config.database_url, balance_save_seconds=config.balance_save_seconds, **kw)
+                   database=config.database_url, balance_save_seconds=config.balance_save_seconds,
+                   metrics_token=config.metrics_token, **kw)
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
         app.router.add_post(CHAT_PATH, self._chat)
+        app.router.add_get("/health", self._health)
+        app.router.add_get("/metrics", self._metrics_page)
         app.on_startup.append(self._start)
         app.on_shutdown.append(self._drain)
         app.on_cleanup.append(self._stop)
@@ -193,12 +206,12 @@ class Proxy:
 
     async def _start(self, app) -> None:
         self._loop = asyncio.get_running_loop()
+        if self._database:
+            await self._loop.run_in_executor(None, self._open_database)
         # Bytes go through untouched, so the client sees the provider's own encoding; the pool is unbounded
         # because the exchange, not the pool, decides how many calls are out.
         self._session = aiohttp.ClientSession(auto_decompress=False, connector=aiohttp.TCPConnector(limit=0),
                                               timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=self._upstream_timeout))
-        if self._database:
-            await self._loop.run_in_executor(None, self._open_database)
         self._gateway = ExchangeGateway(
             self._send, self._engine, self._limit, clock=self._clock, on_event=self._events(),
             rescore=lambda task, now: self._scorer.score(task.meta, now).price, tokens_per_minute=self._tokens_per_minute,
@@ -220,8 +233,8 @@ class Proxy:
         self._writer = EventWriter(self._database, self._run_id)
 
     def _events(self):
-        sinks = [s for s in (self._on_event, self._writer) if s is not None]
-        return (lambda event: [sink(event) for sink in sinks]) if sinks else None
+        sinks = [s for s in (self._on_event, self._writer, self._metrics) if s is not None]
+        return lambda event: [sink(event) for sink in sinks]
 
     async def _save_balances_forever(self) -> None:
         while True:
@@ -232,13 +245,33 @@ class Proxy:
         try:
             balances = await self._loop.run_in_executor(None, self._gateway.balances)
             await self._loop.run_in_executor(None, self._write_balances, balances)
+            self._balances_saved = True
         except Exception:
+            self._balances_saved = False
             self.balance_save_failures += 1
             log.exception("could not save credit balances (%d failures so far)", self.balance_save_failures)
 
     def _write_balances(self, balances: dict[str, float]) -> None:
         with connect(self._database) as conn:
             save_balances(conn, balances)
+
+    async def _health(self, request: web.Request) -> web.Response:
+        if not self._gateway.alive:
+            return web.json_response({"status": "down", "reason": "the exchange stopped"}, status=503)
+        problems = []
+        if self._writer is not None and self._writer.error is not None:
+            problems.append("events are not being stored")
+        if not self._balances_saved:
+            problems.append("credit balances are not being saved")
+        return web.json_response({"status": "degraded" if problems else "ok", "problems": problems})
+
+    async def _metrics_page(self, request: web.Request) -> web.Response:
+        if self._metrics_token and request.headers.get("Authorization") != f"Bearer {self._metrics_token}":
+            return error_response(401, "missing or wrong metrics token", "invalid_request_error")
+        depths, balances = await self._loop.run_in_executor(None, lambda: (self._gateway.queue_depth(), self._gateway.balances()))
+        text = self._metrics.render(depths, balances, self._gateway.rate_scale, self.balance_save_failures,
+                                    self._writer is not None and self._writer.error is not None)
+        return web.Response(text=text, content_type="text/plain", charset="utf-8", headers={"X-Content-Type-Options": "nosniff"})
 
     async def _drain(self, app) -> None:
         """Shutting down: answer the calls still waiting for a slice with a 503 instead of making them wait."""

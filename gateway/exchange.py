@@ -201,6 +201,26 @@ class ExchangeGateway:
             self._cv.notify()
         return task
 
+    @property
+    def rate_scale(self) -> float:
+        """Share of the configured release rate in use now (1 unless adaptive)."""
+        return self._core.rate_scale
+
+    @property
+    def alive(self) -> bool:
+        """False once the exchange thread has died, for instance because the engine did."""
+        return self._thread.is_alive()
+
+    def queue_depth(self) -> dict[str, int]:
+        """Tasks waiting for a slice, per tenant: not yet placed, waiting for credits, or resting in the book."""
+        with self._cv:
+            waiting = [*self._inbox, *self._unfunded, *self._core.resting()]
+        depth: dict[str, int] = {}
+        for task in waiting:
+            tenant = getattr(task.meta, "tenant_id", "default")
+            depth[tenant] = depth.get(tenant, 0) + 1
+        return depth
+
     def balances(self) -> dict[str, float]:
         """Every tenant's credit balance now, for saving. Empty without budgets."""
         with self._cv:

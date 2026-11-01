@@ -29,11 +29,15 @@ async def serve(app: web.Application, **runner_args) -> tuple[web.AppRunner, str
 
 
 @asynccontextmanager
-async def running(handler, limit=600, **proxy_args):
-    """A fake provider running `handler`, a proxy in front of it, and a client session."""
+async def running(handler, limit=600, holder=None, **proxy_args):
+    """A fake provider running `handler`, a proxy in front of it, and a client session.
+    A test that needs the Proxy itself passes a dict as `holder` and finds it under "proxy"."""
     upstream, upstream_url = await serve(_app(handler))
     with Engine(arena=1000) as engine:
-        front, front_url = await serve(Proxy(upstream_url + CHAT_PATH, engine, limit, **proxy_args).app(), **RUNNER_ARGS)
+        proxy = Proxy(upstream_url + CHAT_PATH, engine, limit, **proxy_args)
+        if holder is not None:
+            holder["proxy"] = proxy
+        front, front_url = await serve(proxy.app(), **RUNNER_ARGS)
         try:
             async with aiohttp.ClientSession() as client:
                 yield client, front_url + CHAT_PATH
@@ -420,3 +424,53 @@ def test_shutting_down_answers_the_calls_still_waiting_with_a_503_instead_of_lea
         await upstream.cleanup()
 
     run(scenario)
+
+
+def test_metrics_and_health_describe_the_proxy_and_the_metrics_token_guards_the_tenants_names():
+    async def scenario():
+        keys = tenants(("acme", 1, "k1"))
+        async with running(ok_provider, limit=6, keys=keys, metrics_token="s3cret") as (client, url):
+            base = url.removesuffix(CHAT_PATH)
+            async with client.post(url, json=CHAT, headers=OK) as r:  # takes the slice resting at start
+                assert r.status == 200
+            queued = asyncio.create_task(client.post(url, json=CHAT, headers=OK))  # waits ten seconds for the next
+            await asyncio.sleep(0.3)
+            async with client.get(base + "/metrics") as r:
+                assert r.status == 401
+            async with client.get(base + "/metrics", headers={"Authorization": "Bearer s3cret"}) as r:
+                lines = (await r.text()).splitlines()
+            assert 'hermes_fills_total{tenant="acme"} 1' in lines and 'hermes_queue_depth{tenant="acme"} 1' in lines
+            assert any(l.startswith('hermes_credit_balance{tenant="acme"}') for l in lines)
+            async with client.get(base + "/health") as r:
+                assert (r.status, await r.json()) == (200, {"status": "ok", "problems": []})
+            queued.cancel()
+
+    run(scenario)
+
+
+def test_health_says_degraded_while_balances_cannot_be_saved_and_down_when_the_exchange_has_stopped():
+    async def scenario():
+        holder = {}
+        async with running(ok_provider, keys=tenants(("acme", 1, "k1")), holder=holder) as (client, url):
+            base, proxy = url.removesuffix(CHAT_PATH), holder["proxy"]
+            proxy._balances_saved = False
+            async with client.get(base + "/health") as r:
+                body = await r.json()
+                assert r.status == 200 and body["status"] == "degraded" and "balances" in body["problems"][0]
+            real = proxy._gateway
+            proxy._gateway = type("Stopped", (), {"alive": False, "__exit__": real.__exit__})()  # as if the exchange thread had died
+            async with client.get(base + "/health") as r:
+                assert r.status == 503 and (await r.json())["status"] == "down"
+            proxy._gateway = real
+
+    run(scenario)
+
+
+def test_a_proxy_whose_database_is_unreachable_refuses_to_start_instead_of_serving_without_its_records():
+    async def scenario():
+        with Engine(arena=100) as engine:
+            proxy = Proxy("http://127.0.0.1:1/x", engine, 600, database="postgresql://nobody@127.0.0.1:1/none")
+            front, _ = await serve(proxy.app(), **RUNNER_ARGS)
+
+    with pytest.raises(Exception):
+        run(scenario)

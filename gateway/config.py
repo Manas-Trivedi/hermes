@@ -15,6 +15,7 @@
     [server]                         # optional
     host = "127.0.0.1"
     port = 8080
+    metrics_token_env = "METRICS_TOKEN"   # optional: if set, /metrics needs "Authorization: Bearer <that value>"
 
     [credits]                        # optional; used when there are tenants
     pool = 60.0                      # credits per second across all tenants; default: requests_per_minute
@@ -62,6 +63,7 @@ class Config:
     timeout_seconds: float = 120.0
     host: str = "127.0.0.1"
     port: int = 8080
+    metrics_token: str | None = None
     pool: float | None = None
     cap_seconds: float = 60.0
     database_url: str | None = None
@@ -111,6 +113,11 @@ def load(path, environ=os.environ) -> Config:
         if not environ.get(env):
             raise ConfigError(f"database.url_env names {env}, which is not set")
         database_url = environ[env]
+    metrics_token = None
+    if (env := server.get("metrics_token_env")) is not None:
+        if not environ.get(env):
+            raise ConfigError(f"server.metrics_token_env names {env}, which is not set")
+        metrics_token = environ[env]
     tenants, keys = [], {}
     for entry in raw.get("tenants", []):
         tenant = Tenant(entry.get("id"), _positive(entry.get("share", 1.0), "a tenant's share"))
@@ -134,6 +141,7 @@ def load(path, environ=os.environ) -> Config:
         timeout_seconds=_positive(upstream.get("timeout_seconds", 120.0), "upstream.timeout_seconds"),
         host=server.get("host", "127.0.0.1"),
         port=_positive(server.get("port", 8080), "server.port", int),
+        metrics_token=metrics_token,
         pool=None if "pool" not in credits else _positive(credits["pool"], "credits.pool"),
         cap_seconds=_positive(credits.get("cap_seconds", 60.0), "credits.cap_seconds"),
         database_url=database_url,
