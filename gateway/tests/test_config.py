@@ -64,3 +64,13 @@ def test_the_database_url_is_read_from_the_named_variable_and_its_absence_is_lou
     assert (c.database_url, c.balance_save_seconds) == ("postgresql://x", 2.0)
     with pytest.raises(ConfigError, match="DB"):
         load(write(tmp_path, text), environ={})
+
+
+def test_a_feed_open_beyond_localhost_must_have_a_token(tmp_path):
+    text = BASE.split("[[tenants]]")[0].replace('api_key_env = "PROVIDER_KEY"', "")
+    c = load(write(tmp_path, text + '[feed]\nport = 8765\n'), environ={})
+    assert (c.feed_host, c.feed_port, c.feed_token) == ("127.0.0.1", 8765, None)
+    with pytest.raises(ConfigError, match="token"):
+        load(write(tmp_path, text + '[feed]\nhost = "0.0.0.0"\nport = 8765\n'), environ={})
+    c = load(write(tmp_path, text + '[feed]\nhost = "0.0.0.0"\nport = 8765\ntoken_env = "T"\n'), environ={"T": "abc"})
+    assert c.feed_token == "abc"

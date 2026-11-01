@@ -21,6 +21,11 @@
     pool = 60.0                      # credits per second across all tenants; default: requests_per_minute
     cap_seconds = 60.0               # seconds of credit a tenant can bank
 
+    [feed]                           # optional: the live WebSocket feed the dashboard watches
+    host = "127.0.0.1"
+    port = 8765
+    token_env = "FEED_TOKEN"         # required when host is not 127.0.0.1: the feed carries every tenant's traffic
+
     [database]                       # optional: without it nothing survives a restart
     url_env = "DATABASE_URL"         # the environment variable holding the Postgres URL
     balance_save_seconds = 5         # how often credit balances are saved
@@ -67,6 +72,9 @@ class Config:
     pool: float | None = None
     cap_seconds: float = 60.0
     database_url: str | None = None
+    feed_host: str = "127.0.0.1"
+    feed_port: int | None = None  # None: no feed
+    feed_token: str | None = None
     balance_save_seconds: float = 5.0
     tenants: list[Tenant] = field(default_factory=list)
     keys: dict[str, Tenant] = field(default_factory=dict)  # sha256 of an API key -> its tenant
@@ -100,7 +108,7 @@ def load(path, environ=os.environ) -> Config:
             raw = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path} is not valid TOML: {e}") from None
-    upstream, limits, server, credits, database = (raw.get(k, {}) for k in ("upstream", "limits", "server", "credits", "database"))
+    upstream, limits, server, credits, database, feed = (raw.get(k, {}) for k in ("upstream", "limits", "server", "credits", "database", "feed"))
     if not isinstance(upstream.get("url"), str) or not upstream["url"].startswith(("http://", "https://")):
         raise ConfigError("upstream.url must be an http(s) URL")
     key = None
@@ -118,6 +126,13 @@ def load(path, environ=os.environ) -> Config:
         if not environ.get(env):
             raise ConfigError(f"server.metrics_token_env names {env}, which is not set")
         metrics_token = environ[env]
+    feed_token = None
+    if (env := feed.get("token_env")) is not None:
+        if not environ.get(env):
+            raise ConfigError(f"feed.token_env names {env}, which is not set")
+        feed_token = environ[env]
+    if feed and feed_token is None and feed.get("host", "127.0.0.1") not in ("127.0.0.1", "localhost", "::1"):
+        raise ConfigError("feed.token_env is required when the feed listens beyond localhost")
     tenants, keys = [], {}
     for entry in raw.get("tenants", []):
         tenant = Tenant(entry.get("id"), _positive(entry.get("share", 1.0), "a tenant's share"))
@@ -145,6 +160,9 @@ def load(path, environ=os.environ) -> Config:
         pool=None if "pool" not in credits else _positive(credits["pool"], "credits.pool"),
         cap_seconds=_positive(credits.get("cap_seconds", 60.0), "credits.cap_seconds"),
         database_url=database_url,
+        feed_host=feed.get("host", "127.0.0.1"),
+        feed_port=None if "port" not in feed else _positive(feed["port"], "feed.port", int),
+        feed_token=feed_token,
         balance_save_seconds=_positive(database.get("balance_save_seconds", 5.0), "database.balance_save_seconds"),
         tenants=tenants,
         keys=keys,

@@ -36,6 +36,10 @@ slows the release rate (`adaptive`, scheduler.capacity). In tenant
 mode the credentials upstream are the proxy's own, so a provider 401 or 403 is
 our fault, not the client's, and becomes a 502.
 
+Live feed: with a feed port set, every event is also streamed over WebSocket
+(feed.EventFeed) for the dashboard, behind a token unless it listens on
+localhost only.
+
 Health and metrics: GET /health says ok, degraded (still serving, but events
 are not being stored or balances not saved) or, with a 503, down. GET /metrics
 is Prometheus text (gateway.metrics); with `metrics_token` set it needs that
@@ -71,6 +75,7 @@ from gateway.metrics import Metrics
 from gateway.sender import Reply
 from gateway.tokens import estimate_tokens
 from pricing import AgentConfig, Budgets, Scorer, TaskMeta
+from feed import EventFeed
 from store import EventWriter, apply_schema, close_unfinished_runs, connect, create_run, finish_run, load_balances, save_balances
 
 log = logging.getLogger("hermes.proxy")
@@ -153,7 +158,8 @@ class Proxy:
                  keys: dict | None = None, upstream_key: str | None = None, pool: float | None = None, cap_seconds: float = 60.0,
                  upstream_timeout: float = 120.0, max_rate_limit_retries: int = 3,
                  adaptive: bool = True, database: str | None = None, balance_save_seconds: float = 5.0,
-                 metrics_token: str | None = None):
+                 metrics_token: str | None = None, feed_host: str = "127.0.0.1", feed_port: int | None = None,
+                 feed_token: str | None = None):
         """`keys` maps the sha256 of an API key to its Tenant (gateway.config); without it the proxy is open."""
         self._upstream = upstream
         self._engine = engine
@@ -166,6 +172,8 @@ class Proxy:
         self._upstream_timeout = upstream_timeout
         self._max_retries = max_rate_limit_retries
         self._adaptive = adaptive
+        self._feed_args = None if feed_port is None else (feed_host, feed_port, feed_token)
+        self._feed: EventFeed | None = None
         self._metrics = Metrics()
         self._metrics_token = metrics_token
         self._balances_saved = True  # whether the latest save worked
@@ -192,7 +200,8 @@ class Proxy:
                    keys=config.keys, upstream_key=config.upstream_key, pool=config.pool, cap_seconds=config.cap_seconds,
                    upstream_timeout=config.timeout_seconds, max_rate_limit_retries=config.max_rate_limit_retries, adaptive=config.adaptive,
                    database=config.database_url, balance_save_seconds=config.balance_save_seconds,
-                   metrics_token=config.metrics_token, **kw)
+                   metrics_token=config.metrics_token,
+                   feed_host=config.feed_host, feed_port=config.feed_port, feed_token=config.feed_token, **kw)
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
@@ -208,6 +217,9 @@ class Proxy:
         self._loop = asyncio.get_running_loop()
         if self._database:
             await self._loop.run_in_executor(None, self._open_database)
+        if self._feed_args:
+            host, port, token = self._feed_args
+            self._feed = EventFeed(host, port, token=token)
         # Bytes go through untouched, so the client sees the provider's own encoding; the pool is unbounded
         # because the exchange, not the pool, decides how many calls are out.
         self._session = aiohttp.ClientSession(auto_decompress=False, connector=aiohttp.TCPConnector(limit=0),
@@ -234,7 +246,7 @@ class Proxy:
         self._writer = EventWriter(self._database, self._run_id)
 
     def _events(self):
-        sinks = [s for s in (self._on_event, self._writer, self._metrics) if s is not None]
+        sinks = [s for s in (self._on_event, self._writer, self._metrics, self._feed) if s is not None]
         return lambda event: [sink(event) for sink in sinks]
 
     async def _save_balances_forever(self) -> None:
@@ -286,6 +298,8 @@ class Proxy:
         if self._saver:
             self._saver.cancel()
         await self._loop.run_in_executor(None, self._gateway.__exit__, None, None, None)
+        if self._feed:
+            await self._loop.run_in_executor(None, self._feed.close)
         if self._database:
             if self._budgets:
                 await self._save_balances()

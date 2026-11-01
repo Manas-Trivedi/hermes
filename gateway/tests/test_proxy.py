@@ -475,3 +475,26 @@ def test_a_proxy_whose_database_is_unreachable_refuses_to_start_instead_of_servi
 
     with pytest.raises(Exception):
         run(scenario)
+
+
+def test_the_feed_streams_the_proxys_events_to_a_dashboard_that_has_the_token():
+    from websockets.sync.client import connect as ws_connect
+
+    async def scenario():
+        holder = {}
+        async with running(ok_provider, holder=holder, feed_port=0, feed_token="t0k") as (client, url):
+            port = holder["proxy"]._feed.port
+            received = []
+
+            def watch():
+                with ws_connect(f"ws://127.0.0.1:{port}/?token=t0k") as ws:
+                    received.append(ws.recv(timeout=5))
+
+            watcher = asyncio.get_running_loop().run_in_executor(None, watch)
+            await until(lambda: holder["proxy"]._feed.clients == 1)
+            async with client.post(url, json=CHAT) as r:
+                assert r.status == 200
+            await watcher
+            assert json.loads(received[0])["event"] == "request"
+
+    run(scenario)
