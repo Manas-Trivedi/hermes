@@ -83,3 +83,35 @@ def test_burst_carries_unsold_capacity_over(engine):
     result = sched.tick(6)  # first slice has now lived 3 intervals
     assert result.expired == [SLICE_ID_BASE]
     assert slice_ids(engine) == [SLICE_ID_BASE + i for i in (1, 2, 3)]
+
+
+def test_tokens_charged_to_the_scheduler_hold_back_the_next_slice_until_repaid(engine):
+    sched = CapacityScheduler(engine, LIMIT, start=0, tokens_per_minute=600)  # 10 tokens a second; a slice every 2s otherwise
+    assert len(sched.tick(0).released) == 1
+    sched.charge(50, now=0)  # repaid at 5s
+    assert sched.tick(2).released == [] and sched.tick(4.9).released == []
+    assert sched.next_deadline() == 5
+    assert len(sched.tick(5).released) == 1
+    assert sched.tick(5.5).released == []  # back on the 2s grid: the slots missed while blocked were skipped, not saved up
+    assert len(sched.tick(6).released) == 1
+
+
+def test_tokens_owed_add_up_but_idle_time_is_not_banked(engine):
+    sched = CapacityScheduler(engine, LIMIT, start=0, tokens_per_minute=600)
+    sched.charge(30, now=0)
+    sched.charge(30, now=1)  # still owing the first: repaid at 3 + 3 = 6s
+    assert sched.next_deadline() == 6
+    sched.charge(10, now=100)  # long idle: it starts from now, not from the debt that was cleared long ago
+    assert sched.next_deadline() == 101
+
+
+def test_the_request_limit_still_holds_when_tokens_are_small(engine):
+    sched = CapacityScheduler(engine, LIMIT, start=0, tokens_per_minute=600)
+    sched.tick(0)
+    sched.charge(1, now=0)  # repaid at 0.1s, long before the 2s slot
+    assert sched.tick(1).released == [] and len(sched.tick(2).released) == 1
+
+
+def test_a_non_positive_token_limit_is_rejected(engine):
+    with pytest.raises(ValueError):
+        CapacityScheduler(engine, LIMIT, start=0, tokens_per_minute=0)

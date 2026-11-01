@@ -6,6 +6,13 @@ resting bid; if there is none it rests until it expires and is cancelled.
 All logic lives in tick(now), which takes the current time as an argument so it
 can be driven without sleeping. The caller owns the loop and the Engine: the
 Engine is not thread safe, so tick() must run on the thread that uses it.
+
+Tokens: given `tokens_per_minute`, the caller reports the estimated tokens of
+each request that wins a slice (charge). The tokens are a debt repaid at the
+token rate, and no slice is released while any is owed, so the release rate is
+whichever of the request limit and the token limit is stricter. A slice stays
+one request; a large request does not pay more for it, it makes the next slice
+wait longer.
 """
 
 from dataclasses import dataclass, field
@@ -33,6 +40,7 @@ class CapacityScheduler:
         start: float,
         reserve_price: int = 1,
         burst: int = 1,
+        tokens_per_minute: float | None = None,
     ):
         """Release one slice every 60/limit seconds, the first at `start`.
 
@@ -40,21 +48,31 @@ class CapacityScheduler:
         and the rate is strict; a larger burst lets unsold capacity carry over,
         so up to `burst` slices can be sold back to back after an idle spell.
         """
-        if limit_per_minute <= 0 or burst < 1 or reserve_price < 1:
-            raise ValueError("limit must be positive, burst and reserve at least 1")
+        if limit_per_minute <= 0 or burst < 1 or reserve_price < 1 or (tokens_per_minute is not None and tokens_per_minute <= 0):
+            raise ValueError("limits must be positive, burst and reserve at least 1")
         self._engine = engine
         self.interval = 60.0 / limit_per_minute
         self._reserve = reserve_price
         self._ttl = burst * self.interval
         self._next_release = start
+        self._token_rate = None if tokens_per_minute is None else tokens_per_minute / 60.0
+        self._tokens_repaid_at = start  # when the tokens charged so far are paid off
         self._next_id = SLICE_ID_BASE
         self._open: list[tuple[int, float]] = []  # (slice id, expires at), oldest first
+
+    def charge(self, tokens: int, now: float) -> None:
+        """A request using `tokens` has won a slice. Does nothing without a token limit."""
+        if self._token_rate is not None:
+            self._tokens_repaid_at = max(self._tokens_repaid_at, now) + tokens / self._token_rate
+
+    def _release_at(self) -> float:
+        return max(self._next_release, self._tokens_repaid_at)
 
     def next_deadline(self) -> float:
         """The earliest time tick() has anything to do."""
         if self._open:
-            return min(self._next_release, self._open[0][1])
-        return self._next_release
+            return min(self._release_at(), self._open[0][1])
+        return self._release_at()
 
     def tick(self, now: float) -> TickResult:
         result = TickResult()
@@ -67,7 +85,7 @@ class CapacityScheduler:
                 result.expired.append(slice_id)
             except UnknownId:
                 pass  # sold to a bid that arrived after it was released
-        if now >= self._next_release:
+        if now >= self._release_at():
             self._release(now, result)
             # Capacity not sold in a window is gone: skip any missed releases
             # instead of firing them all at once after a late tick.

@@ -30,6 +30,10 @@ cancellable) until credits come back. The bid holds its credits while it rests,
 a win spends the price paid, and a cancel gives the hold back. A raise from aging is capped the same way. A call
 the backend rejects with a 429 has already spent its credits, so its re-bid
 spends again.
+
+Tokens: given `tokens_per_minute`, a task carries an estimate of its tokens
+(gateway.tokens), and every win is charged to the scheduler, which then holds
+back the next slice until the tokens are repaid at that rate (scheduler.capacity).
 """
 
 import threading
@@ -43,10 +47,11 @@ from scheduler import SLICE_ID_BASE, CapacityScheduler
 
 
 class Task:
-    def __init__(self, request_id: str, bid: int, meta=None):
+    def __init__(self, request_id: str, bid: int, meta=None, tokens: int = 0):
         self.request_id = request_id
         self.bid = bid  # price offered, in ticks; aging raises it
         self.meta = meta  # what the scorer needs to re-price the task (pricing.TaskMeta)
+        self.tokens = tokens  # estimated tokens of the call, charged when it wins a slice
         self.paid: int | None = None  # price of the fill that won the latest slice
         self.attempts = 0  # calls sent to the backend
         self.cancelled = False
@@ -65,9 +70,13 @@ class Fill:
 
 
 class ExchangeCore:
-    def __init__(self, engine: Engine, limit_per_minute: float, start: float, reserve_price: int = 1):
+    def __init__(
+        self, engine: Engine, limit_per_minute: float, start: float, reserve_price: int = 1, tokens_per_minute: float | None = None
+    ):
         self._engine = engine
-        self._scheduler = CapacityScheduler(engine, limit_per_minute, start=start, reserve_price=reserve_price)
+        self._scheduler = CapacityScheduler(
+            engine, limit_per_minute, start=start, reserve_price=reserve_price, tokens_per_minute=tokens_per_minute
+        )
         self._reserve = reserve_price
         self._next_bid_id = 1
         self._resting: dict[int, Task] = {}  # bid id -> task, for bids still in the book
@@ -112,6 +121,11 @@ class ExchangeCore:
         """Release and expire slices; returns the bids a new slice reached."""
         return self._fills(self._scheduler.tick(now).trades)
 
+    def charge(self, fills: list[Fill], now: float) -> None:
+        """Charge the wins' tokens to the scheduler. Call it right after the fills are seen."""
+        for fill in fills:
+            self._scheduler.charge(fill.task.tokens, now)
+
     def _fills(self, trades: list[Trade]) -> list[Fill]:
         fills = []
         for t in trades:
@@ -132,13 +146,14 @@ class ExchangeGateway:
         rescore=None,
         reprice_interval: float = 1.0,
         budgets=None,
+        tokens_per_minute: float | None = None,
     ):
         """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events).
         `rescore(task, now)` returns the price a resting task should offer now; see Aging above."""
         self._send = send
         self._clock = clock
         self._on_event = on_event or (lambda _: None)
-        self._core = ExchangeCore(engine, limit_per_minute, start=clock(), reserve_price=reserve_price)
+        self._core = ExchangeCore(engine, limit_per_minute, start=clock(), reserve_price=reserve_price, tokens_per_minute=tokens_per_minute)
         self._rescore = rescore
         self._budgets = budgets
         self._reserve = reserve_price
@@ -161,8 +176,8 @@ class ExchangeGateway:
             self._cv.notify()
         self._thread.join()
 
-    def submit(self, request_id: str, bid: int, meta=None) -> Task:
-        task = Task(request_id, bid, meta)
+    def submit(self, request_id: str, bid: int, meta=None, tokens: int = 0) -> Task:
+        task = Task(request_id, bid, meta, tokens)
         self._emit("request", task)
         with self._cv:
             self._inbox.append(task)
@@ -192,7 +207,10 @@ class ExchangeGateway:
             while not self._stopped:
                 fills = self._admit()
                 fills += self._age()
-                fills += self._core.tick(self._clock())
+                self._core.charge(fills, self._clock())  # before the tick, so a win here holds back this tick's slice
+                ticked = self._core.tick(self._clock())
+                self._core.charge(ticked, self._clock())
+                fills += ticked
                 for fill in fills:
                     fill.task.paid = fill.paid
                     if self._budgets:

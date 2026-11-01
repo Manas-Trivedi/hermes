@@ -200,6 +200,10 @@ Without a cost for urgency, every agent would bid its maximum. So each agent has
 - Winning spends the price actually paid. If the backend rejects a call that already won, the retry pays again.
 - Refill rates are set by the operator, never by the agents: each agent gets a share of a total pool in proportion to its expected demand times its business weight. The demands, the weights, the pool and the cap are all settings. By default every agent counts the same and the pool matches the experiment's expected load, and they are meant to be set before a run.
 
+## Token limits
+
+Providers cap tokens per minute as well as requests per minute. The exchange gateway takes an optional tokens-per-minute limit. A slice stays one request, but each request that wins is charged its estimated tokens (its prompt at about four characters a token, plus the most it may generate), and the next slice is held back until those tokens are repaid at the token rate. So the release rate follows whichever limit is stricter, and a large request delays the line behind it instead of paying a bigger price. The estimate is a budget, not a count; correcting it with the usage the provider reports comes with the OpenAI-compatible surface. Without a token limit nothing changes.
+
 ## Recording and watching a run
 
 Every gateway reports each step of a request's life (request, bid, fill, forward, rejected, result, cancelled) as an event. Two listeners can be attached to any gateway, on their own or together:

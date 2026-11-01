@@ -217,3 +217,27 @@ def test_aging_cannot_raise_a_bid_past_what_the_agent_can_afford():
             assert rich.wait(10)
     repriced = [(e["previous"], e["offered"]) for e in events if e["event"] == "reprice" and e["request_id"] == "rich"]
     assert repriced == [(10, 80)]
+
+
+def test_a_win_charges_its_tokens_and_the_next_slice_waits_for_them():
+    with Engine(arena=100) as engine:
+        core = ExchangeCore(engine, limit_per_minute=60, start=0.0, tokens_per_minute=600)  # a slice a second, 10 tokens a second
+        for name in ("a", "b"):
+            core.submit(Task(name, 10, tokens=50))
+        fills = core.tick(0.0)
+        core.charge(fills, 0.0)
+        assert [f.task.request_id for f in fills] == ["a"]
+        assert core.tick(1.0) == [] and core.tick(4.9) == []  # 50 tokens take 5 seconds to repay
+        assert [f.task.request_id for f in core.tick(5.0)] == ["b"]
+
+
+def test_through_the_gateway_calls_are_spaced_by_their_tokens_not_just_the_request_rate():
+    events = []
+    with Engine(arena=100) as engine, real_sender(600, 0.05) as sender:
+        with ExchangeGateway(sender, engine, 600, on_event=events.append, tokens_per_minute=300) as gw:  # 5 tokens a second
+            tasks = [gw.submit("first", 5, tokens=3)]
+            assert tasks[0].wait(10)
+            tasks += [gw.submit(f"t{i}", 5, tokens=3) for i in range(2)]
+            assert all(t.wait(10) for t in tasks)
+    sent = [e["t"] for e in events if e["event"] == "forward"]
+    assert len(sent) == 3 and all(b - a >= 0.55 for a, b in zip(sent, sent[1:]))  # 3 tokens = 0.6s, against 0.1s from the request rate
