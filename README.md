@@ -61,7 +61,7 @@ No benchmark numbers yet. They will appear here once the experiment has actually
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways and the urgency scorer run today.
+Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. The experiment runner and the dashboard do not exist yet.
 
 **Requirements**
 
