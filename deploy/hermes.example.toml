@@ -1,0 +1,44 @@
+# Sample config for the Hermes proxy. Copy it, change every value marked REPLACE, and mount it at
+# /etc/hermes/hermes.toml. The full list of settings is described at the top of gateway/config.py.
+
+[upstream]
+url = "https://api.openai.com/v1/chat/completions"
+api_key_env = "OPENAI_API_KEY"        # the provider's key, read from the environment, never from this file
+timeout_seconds = 120
+
+[limits]
+# Set these to what your provider allows your account. The proxy slows itself down if the provider says otherwise.
+requests_per_minute = 60
+tokens_per_minute = 90000
+default_max_tokens = 1024
+max_rate_limit_retries = 3
+adaptive = true
+
+[server]
+host = "0.0.0.0"                      # inside the container; keep the port at 8080
+port = 8080
+metrics_token_env = "METRICS_TOKEN"   # /metrics needs this as a bearer token
+
+[database]
+url_env = "DATABASE_URL"
+balance_save_seconds = 5
+
+[credits]
+cap_seconds = 60                      # seconds of credit a tenant can bank; the pool defaults to requests_per_minute
+
+# One block per team. Make a key with:
+#   python3 -c "import secrets; print('sk-hermes-' + secrets.token_urlsafe(32))"
+[[tenants]]
+id = "support"
+share = 3.0
+api_keys = ["sk-hermes-REPLACE-support"]
+
+[[tenants]]
+id = "research"
+share = 2.0
+api_keys = ["sk-hermes-REPLACE-research"]
+
+[[tenants]]
+id = "batch"
+share = 1.0
+api_keys = ["sk-hermes-REPLACE-batch"]

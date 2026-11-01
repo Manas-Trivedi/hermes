@@ -225,7 +225,7 @@ def test_a_win_charges_its_tokens_and_the_next_slice_waits_for_them():
         for name in ("a", "b"):
             core.submit(Task(name, 10, tokens=50))
         fills = core.tick(0.0)
-        core.charge(fills, 0.0)
+        core.sold(fills, 0.0)
         assert [f.task.request_id for f in fills] == ["a"]
         assert core.tick(1.0) == [] and core.tick(4.9) == []  # 50 tokens take 5 seconds to repay
         assert [f.task.request_id for f in core.tick(5.0)] == ["b"]
@@ -256,3 +256,26 @@ def test_a_backend_stricter_than_the_configured_limit_is_found_instead_of_hammer
     learned, statuses, scale = waste(True)
     assert statuses == [200] * 8 and scale < 0.5
     assert learned < fixed / 2  # the point of adapting, with a wide margin
+
+
+def test_a_late_sale_pushes_the_next_slice_a_full_interval_out_so_calls_are_never_closer_than_the_limit():
+    with Engine(arena=100) as engine:
+        core = ExchangeCore(engine, limit_per_minute=20, start=0.0)  # a slice every 3s
+        core.tick(0.0)  # released, resting unsold
+        [fill] = core.submit(Task("late", 50))  # bought at 2.1s in practice
+        assert fill.late
+        core.sold([fill], now=2.1)
+        core.submit(Task("next", 50))
+        assert core.tick(3.0) == [] and core.tick(5.0) == []  # the grid slice at 3.0 would be only 0.9s after the call
+        assert [f.task.request_id for f in core.tick(5.1)] == ["next"]
+
+
+def test_a_slice_that_finds_a_waiting_bid_is_not_a_late_sale_and_the_grid_is_unchanged():
+    with Engine(arena=100) as engine:
+        core = ExchangeCore(engine, limit_per_minute=20, start=0.0)
+        core.submit(Task("a", 50))
+        core.submit(Task("b", 50))
+        [first] = core.tick(0.0)
+        assert not first.late
+        core.sold([first], now=0.0)
+        assert [f.task.request_id for f in core.tick(3.0)] == ["b"]

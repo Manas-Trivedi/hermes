@@ -251,6 +251,28 @@ With a `[database]` in the config (a Postgres URL in an environment variable), t
 
 Provider limits are not always known, and they move. With `adaptive = true` (the proxy's default) every real 429 from the provider halves the release rate, at most once per interval so one burst of limiting counts once, and holds releases for its `Retry-After`. Each call that gets through earns back 2% of the configured rate, up to the configured rate, and the rate never falls below a tenth of it. It is the additive-increase, multiplicative-decrease rule TCP uses: the limit is found by being rejected now and then, and the slow climb keeps that rare. In a test where the configured limit was five times the provider's, eight calls cost 32 wasted retries with a fixed rate and 3 with the adaptive one. The experiment gateways are not adaptive, so the results do not depend on it.
 
+## Deploying
+
+The `deploy` directory has what a team needs to run the proxy with its own Postgres. It needs Docker.
+
+```bash
+cd deploy
+cp hermes.example.toml hermes.toml   # set your provider's limits and one block per team, with new keys
+cp .env.example .env                 # the provider key, a metrics token and a database password
+docker compose up -d --build
+```
+
+Point your agents' base URL at `http://<host>:8080/v1` and give each team its own `Bearer` key. The first build compiles the matching engine and fetches its test library, so it needs network and takes a few minutes. The Postgres schema is applied by the proxy itself at every start.
+
+| Setting | Where | What it does |
+|---|---|---|
+| Provider limits | `[limits]` in `hermes.toml` | What your account is allowed. The proxy slows itself down if the provider says less |
+| Teams | `[[tenants]]` | A name, a share of the credit pool, and the keys that identify its calls |
+| Provider key, metrics token, database | `.env` | Secrets, kept out of the config file |
+| `HERMES_PORT` | `.env` | The port the proxy is published on, 8080 by default |
+
+Check it with `curl localhost:8080/health`. To stop it without dropping work, use `docker compose stop`: calls still waiting for a slice get a 503 with `Retry-After`, and calls already out get up to a minute to finish. Run one proxy per database. The dashboard is not part of the image yet.
+
 ## Recording and watching a run
 
 Every gateway reports each step of a request's life (request, bid, fill, forward, rejected, result, cancelled) as an event. Two listeners can be attached to any gateway, on their own or together:

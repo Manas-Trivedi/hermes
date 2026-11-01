@@ -1,0 +1,42 @@
+# The Hermes proxy with its Postgres.
+#
+#   cp hermes.example.toml hermes.toml        # then replace the keys in it
+#   cp .env.example .env                      # then fill in the secrets
+#   docker compose up -d --build
+#
+# Run it from this directory. Nothing is published but the proxy's port.
+services:
+  hermes:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set it in .env}
+      METRICS_TOKEN: ${METRICS_TOKEN:?set it in .env}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set it in .env}@db:5432/hermes
+    volumes:
+      - ./hermes.toml:/etc/hermes/hermes.toml:ro
+    ports:
+      - "${HERMES_PORT:-8080}:8080"
+    stop_grace_period: 90s  # the proxy gives calls already out up to 60s to finish
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+      POSTGRES_DB: hermes
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "hermes"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

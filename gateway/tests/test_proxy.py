@@ -377,6 +377,7 @@ def test_events_and_balances_survive_a_restart_and_the_balance_keeps_regeneratin
         row = conn.execute("SELECT r.finished_at IS NOT NULL, q.tenant_id, q.outcome, q.status FROM experiment_runs r JOIN requests q ON q.run_id = r.id").fetchone()
         assert row == (True, "acme", "result", 200)  # the run was finished and the request stored with its tenant
         saved = conn.execute("SELECT balance FROM credit_balances WHERE tenant_id = 'acme'").fetchone()[0]
+        conn.commit()  # end this transaction: the next start applies the schema and would wait on its locks
         assert saved < 600  # a full balance is 10 credits a second for 60 seconds; the win spent some
 
         async def second_life():

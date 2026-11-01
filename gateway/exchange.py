@@ -71,6 +71,7 @@ class Task:
 class Fill:
     task: Task
     paid: int  # trade price: the bid's own price, or the reserve for a late bid
+    late: bool = False  # the bid took a slice that was already resting, rather than a new slice taking the bid
 
 
 class ExchangeCore:
@@ -137,16 +138,19 @@ class ExchangeCore:
     def succeeded(self) -> None:
         self._scheduler.succeeded()
 
-    def charge(self, fills: list[Fill], now: float) -> None:
-        """Charge the wins' tokens to the scheduler. Call it right after the fills are seen."""
+    def sold(self, fills: list[Fill], now: float) -> None:
+        """Tell the scheduler about wins: charge their tokens, and space the next slice after a late sale.
+        Call it right after the fills are seen."""
         for fill in fills:
             self._scheduler.charge(fill.task.tokens, now)
+            if fill.late:
+                self._scheduler.sold_late(now)
 
     def _fills(self, trades: list[Trade]) -> list[Fill]:
         fills = []
         for t in trades:
             bid_id = t.taker_id if t.taker_id < SLICE_ID_BASE else t.maker_id
-            fills.append(Fill(self._resting.pop(bid_id), t.price))
+            fills.append(Fill(self._resting.pop(bid_id), t.price, late=t.taker_id < SLICE_ID_BASE))
         return fills
 
 
@@ -249,9 +253,9 @@ class ExchangeGateway:
             while not self._stopped:
                 fills = self._admit()
                 fills += self._age()
-                self._core.charge(fills, self._clock())  # before the tick, so a win here holds back this tick's slice
+                self._core.sold(fills, self._clock())  # before the tick, so a win here holds back this tick's slice
                 ticked = self._core.tick(self._clock())
-                self._core.charge(ticked, self._clock())
+                self._core.sold(ticked, self._clock())
                 fills += ticked
                 for fill in fills:
                     fill.task.paid = fill.paid

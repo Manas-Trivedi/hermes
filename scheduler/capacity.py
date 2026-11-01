@@ -108,6 +108,12 @@ class CapacityScheduler:
         if self._token_rate is not None:
             self._tokens_repaid_at = max(self._tokens_repaid_at, now) + tokens / self._token_rate
 
+    def sold_late(self, now: float) -> None:
+        """A bid took the slice that was resting, `now`, instead of the slice taking the bid. The call
+        goes out now, so the next slice must wait a full interval from now, not from its release:
+        otherwise two calls can reach the provider closer together than its limit allows."""
+        self._next_release = max(self._next_release, now + self.interval)
+
     def _release_at(self) -> float:
         return max(self._next_release, self._tokens_repaid_at, self._paused_until)
 

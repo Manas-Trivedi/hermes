@@ -71,7 +71,7 @@ from gateway.metrics import Metrics
 from gateway.sender import Reply
 from gateway.tokens import estimate_tokens
 from pricing import AgentConfig, Budgets, Scorer, TaskMeta
-from store import EventWriter, close_unfinished_runs, connect, create_run, finish_run, load_balances, save_balances
+from store import EventWriter, apply_schema, close_unfinished_runs, connect, create_run, finish_run, load_balances, save_balances
 
 log = logging.getLogger("hermes.proxy")
 RUN_NAME = "proxy"
@@ -224,6 +224,7 @@ class Proxy:
     def _open_database(self) -> None:
         """Close what a crash left open, restore the saved balances, and start this process's run."""
         with connect(self._database) as conn:
+            apply_schema(conn)  # safe to repeat, and a fresh database needs it
             if closed := close_unfinished_runs(conn, RUN_NAME):
                 log.warning("closed %d run(s) left open by a crash; their in-flight requests are marked cancelled", closed)
             if self._budgets:
