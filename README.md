@@ -52,7 +52,7 @@ Hermes is being built in the open, one small step at a time.
 | Urgency model | Explainable bid pricing and aging of waiting bids | Done |
 | Credit budgets | Regenerating per-agent balances that cap bids | Done |
 | Bidder agents | PR review, support triage, research synthesis, and a seeded workload that drives them | Done |
-| Persistence and live feed | Event storage and a WebSocket stream | Planned |
+| Persistence and live feed | Postgres storage of every run, request, bid and fill, and a live WebSocket stream of gateway events | Done |
 | Dashboard | Live order book, fills, FIFO vs priority vs exchange comparison | Planned |
 | Experiment | Same workload, three allocation strategies, published results | Planned |
 | Deployable service | OpenAI-compatible proxy, token-weighted capacity, API keys and budgets per team, restart safety, Docker image | Planned |
@@ -61,7 +61,7 @@ No benchmark numbers yet. They will appear here once the experiment has actually
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. The experiment runner and the dashboard do not exist yet.
+Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. Gateway events can be stored in Postgres and streamed over WebSocket. The experiment runner and the dashboard do not exist yet.
 
 **Requirements**
 
@@ -78,11 +78,19 @@ cmake --build build
 ./build/matcha_tests
 ```
 
-**Test the Python client**
+**Test the Python code**
 
 Needs [uv](https://docs.astral.sh/uv/) and the engine built as above.
 
 ```bash
+uv run pytest
+```
+
+The tests that touch Postgres run only when `HERMES_TEST_DATABASE_URL` points at a disposable database, and are skipped otherwise. Each test works in its own throwaway schema, so the database can be reused. For example, with Docker:
+
+```bash
+docker run -d --name hermes_test_pg -e POSTGRES_PASSWORD=hermes -e POSTGRES_DB=hermes_test -p 5433:5432 postgres:16
+export HERMES_TEST_DATABASE_URL=postgresql://postgres:hermes@localhost:5433/hermes_test
 uv run pytest
 ```
 
@@ -138,6 +146,17 @@ Without a cost for urgency, every agent would bid its maximum. So each agent has
 - A bid holds its credits while it waits, so one balance cannot back many bids at once. A cancelled bid gives them back.
 - Winning spends the price actually paid. If the backend rejects a call that already won, the retry pays again.
 - Refill rates are set by the operator, never by the agents: each agent gets a share of a total pool in proportion to its expected demand times its business weight. The demands, the weights, the pool and the cap are all settings. By default every agent counts the same and the pool matches the experiment's expected load, and they are meant to be set before a run.
+
+## Recording and watching a run
+
+Every gateway reports each step of a request's life (request, bid, fill, forward, rejected, result, cancelled) as an event. Two listeners can be attached to any gateway, on their own or together:
+
+| Listener | What it does |
+|---|---|
+| Event writer | Stores events in Postgres: one row per request with its outcome and its count of 429s, one row per bid or raise, one row per fill. Rows belong to an experiment run, which records the condition, the seed and the settings. |
+| Live feed | Sends each event as a JSON message to every connected WebSocket client the moment it happens. A client sees only events from when it connects, and one that falls too far behind is disconnected rather than slowing the gateway. |
+
+A gateway never waits on either. The writer queues events and writes them in batches from its own thread. If a write fails, the writer stops and raises when it is closed, so a run cannot report success while its events were lost.
 
 ## Matching rules
 
