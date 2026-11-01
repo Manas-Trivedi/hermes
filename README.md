@@ -53,7 +53,7 @@ Hermes is being built in the open, one small step at a time.
 | Credit budgets | Regenerating per-agent balances that cap bids | Done |
 | Bidder agents | PR review, support triage, research synthesis, and a seeded workload that drives them | Done |
 | Persistence and live feed | Postgres storage of every run, request, bid and fill, and a live WebSocket stream of gateway events | Done |
-| Dashboard | Live order book, fills, FIFO vs priority vs exchange comparison | Planned |
+| Dashboard | Live order book, fills, per-agent request timelines, and a FIFO vs priority vs exchange comparison of stored runs | Done |
 | Experiment | Same workload, three allocation strategies, published results | Planned |
 | Deployable service | OpenAI-compatible proxy, token-weighted capacity, API keys and budgets per team, restart safety, Docker image | Planned |
 
@@ -61,7 +61,7 @@ No benchmark numbers yet. They will appear here once the experiment has actually
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. Gateway events can be stored in Postgres and streamed over WebSocket. The experiment runner and the dashboard do not exist yet.
+Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. Gateway events can be stored in Postgres and streamed over WebSocket. The dashboard shows a run live and compares stored runs. The experiment runner does not exist yet.
 
 **Requirements**
 
@@ -101,6 +101,36 @@ A script releases capacity slices at a fixed rate and throws random bids at them
 ```bash
 uv run python -m experiments.synthetic_bidders
 ```
+
+**Watch a mock run on the dashboard**
+
+The demo plays the three agents' seeded workload through one gateway against the mock backend, and streams every event to the dashboard. It waits for a dashboard to connect before it starts, so the first bid is not missed.
+
+```bash
+uv run python -m experiments.demo --gateway exchange --duration 120 --limit 20
+cd dashboard && npm install && npm run dev
+```
+
+Open the page the dev server prints. It shows:
+
+| Panel | What it shows |
+|---|---|
+| Order book | Bids waiting for a slice, best price first, and the price the last fill paid |
+| Fills | The latest slices won, who won them and what they paid |
+| Agent timelines | One row per request over the last minute: grey while it waits for a slice, blue while the backend has it, a cross for each rejection (429) |
+| Comparison | Stored runs side by side: completion time, P95 latency, failures and wasted retries for FIFO, priority and exchange |
+
+The workload asks for about 27 calls a minute, so a limit of 20 makes the agents compete and shows bids being raised and rejected. `--gateway fifo` and `--gateway priority` run the same work under the other two conditions.
+
+The comparison reads runs stored in Postgres. Create the tables once, run the demo under each condition with `--database <url>`, and serve the results to the page:
+
+```bash
+uv run python -c "from store import connect, apply_schema; apply_schema(connect('<url>'))"
+uv run python -m experiments.demo --gateway fifo --database <url>
+uv run python -m store.api --database <url>
+```
+
+Only runs that finished are shown, so a run that crashed halfway never passes for a result. A failure is a request that was cancelled or that ended on anything but a 200. The dashboard shows the latest run of each condition. This is a single-run view for checking that the pipe works, not the experiment: it has no repeated runs, seed sweeps or credit budgets, and its numbers are not results.
 
 **Drive the book from the command line**
 

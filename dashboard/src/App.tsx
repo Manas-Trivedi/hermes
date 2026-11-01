@@ -1,3 +1,4 @@
+import { Comparison } from "./Comparison";
 import { Fills } from "./Fills";
 import { OrderBook } from "./OrderBook";
 import { Timelines } from "./Timelines";
@@ -16,6 +17,7 @@ export function App() {
       <OrderBook book={book} />
       <Fills fills={fills} />
       <Timelines lives={lives} />
+      <Comparison />
       <h2>Recent events</h2>
       <table>
         <thead>
