@@ -48,7 +48,7 @@ def run_summaries(conn) -> list[dict]:
     return rows
 
 
-def make_server(url: str, port: int = 8766) -> ThreadingHTTPServer:
+def make_server(url: str, port: int = 8766, host: str = "127.0.0.1") -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path != "/runs":
@@ -66,7 +66,7 @@ def make_server(url: str, port: int = 8766) -> ThreadingHTTPServer:
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
     return server
 
@@ -75,9 +75,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Serve stored experiment results to the dashboard")
     p.add_argument("--database", required=True)
     p.add_argument("--port", type=int, default=8766)
+    p.add_argument("--host", default="127.0.0.1", help="0.0.0.0 inside a container")
     a = p.parse_args()
-    server = make_server(a.database, a.port)
-    print(f"results on http://127.0.0.1:{server.server_port}/runs")
+    server = make_server(a.database, a.port, a.host)
+    print(f"results on http://{a.host}:{server.server_port}/runs")
     server.serve_forever()
 
 

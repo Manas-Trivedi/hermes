@@ -1,0 +1,42 @@
+# Development stack: Postgres with the Hermes schema, and the results server
+# the dashboard's comparison panel reads. The engine, the demo and the
+# experiment runner still run on the host and write to this database.
+#
+#   docker compose up -d
+#   uv run python -m experiments.runner --database postgresql://postgres:hermes@localhost:5434/hermes
+#
+# Ports are 5434 and 8766 so this does not clash with another Postgres on 5432.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: hermes
+      POSTGRES_DB: hermes
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # runs once, when the data volume is first created; the schema is safe to apply again by hand
+      - ./store/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "hermes"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  results:
+    image: python:3.13-slim
+    working_dir: /app
+    volumes:
+      - ./store:/app/store:ro
+    command: >
+      sh -c "pip install --quiet --no-cache-dir 'psycopg[binary]' &&
+             python -m store.api --database postgresql://postgres:hermes@db:5432/hermes --host 0.0.0.0"
+    ports:
+      - "8766:8766"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

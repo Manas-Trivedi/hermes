@@ -86,11 +86,10 @@ Needs [uv](https://docs.astral.sh/uv/) and the engine built as above.
 uv run pytest
 ```
 
-The tests that touch Postgres run only when `HERMES_TEST_DATABASE_URL` points at a disposable database, and are skipped otherwise. Each test works in its own throwaway schema, so the database can be reused. For example, with Docker:
+The tests that touch Postgres run only when `HERMES_TEST_DATABASE_URL` points at a database, and are skipped otherwise. Each test works in its own throwaway schema, so the development database below can be reused:
 
 ```bash
-docker run -d --name hermes_test_pg -e POSTGRES_PASSWORD=hermes -e POSTGRES_DB=hermes_test -p 5433:5432 postgres:16
-export HERMES_TEST_DATABASE_URL=postgresql://postgres:hermes@localhost:5433/hermes_test
+export HERMES_TEST_DATABASE_URL=postgresql://postgres:hermes@localhost:5434/hermes
 uv run pytest
 ```
 
@@ -122,11 +121,19 @@ Open the page the dev server prints. It shows:
 
 The workload asks for about 27 calls a minute, so a limit of 20 makes the agents compete and shows bids being raised and rejected. `--gateway fifo` and `--gateway priority` run the same work under the other two conditions.
 
-The comparison reads runs stored in Postgres. Create the tables once, run the demo under each condition with `--database <url>`, and serve the results to the page:
+The comparison reads runs stored in Postgres. A development stack with Postgres (schema already applied) and the results server that the dashboard reads comes up with one command. It needs Docker.
+
+```bash
+docker compose up -d
+uv run python -m experiments.demo --gateway fifo --database postgresql://postgres:hermes@localhost:5434/hermes
+```
+
+Postgres is then on port 5434 and the results server on port 8766, which is where the dashboard looks. The engine, the demo and the experiment runner keep running on your machine and write to that database; only Postgres and the results server run in containers. `docker compose down` stops them and keeps the data, and `docker compose down -v` also deletes it. Run the demo under each condition (`--gateway fifo`, `priority`, `exchange`), and reload the comparison.
+
+To use your own Postgres instead, apply the schema once and run the results server by hand:
 
 ```bash
 uv run python -c "from store import connect, apply_schema; apply_schema(connect('<url>'))"
-uv run python -m experiments.demo --gateway fifo --database <url>
 uv run python -m store.api --database <url>
 ```
 
@@ -137,7 +144,7 @@ Only runs that finished are shown, so a run that crashed halfway never passes fo
 The runner plays the same seeded workload through FIFO, priority scheduling with aging and the exchange (with credit budgets), one after the other, and stores every run in Postgres. For each seed it does this twice: once with all agents honest, and once with the PR review agent declaring every call as urgent and due now.
 
 ```bash
-uv run python -m experiments.runner --database <url> --seeds 1,2,3
+uv run python -m experiments.runner --database postgresql://postgres:hermes@localhost:5434/hermes --seeds 1,2,3
 ```
 
 Each seed and variant is stored as its own experiment, so the dashboard's comparison shows the three conditions side by side. Runs go one at a time, because overlapping runs would be measuring each other. A run that fails stays unfinished and the runner stops with the error. The settings that matter (backend limit, priority aging rate, credit pool) are flags, and they are recorded with every run. A full default run is slow: each run lasts a couple of minutes, and a seed makes six of them.
