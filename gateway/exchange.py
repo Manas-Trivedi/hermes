@@ -16,6 +16,12 @@ the gap between slices.
 If the backend rejects a call that already won a slice (the slice is spent),
 the task is bid again at the same price under a new id, and that counts as a
 wasted retry.
+
+Aging: given `rescore(task, now)`, the gateway re-prices every resting bid each
+`reprice_interval` seconds. A bid that scores higher than it offers is cancelled
+and placed again at the new price, which gives it a new id and a later place in
+the queue at that price. A bid is only ever raised, never lowered, so the price
+a waiting task offers cannot fall.
 """
 
 import threading
@@ -29,9 +35,10 @@ from scheduler import SLICE_ID_BASE, CapacityScheduler
 
 
 class Task:
-    def __init__(self, request_id: str, bid: int):
+    def __init__(self, request_id: str, bid: int, meta=None):
         self.request_id = request_id
-        self.bid = bid  # price offered, in ticks
+        self.bid = bid  # price offered, in ticks; aging raises it
+        self.meta = meta  # what the scorer needs to re-price the task (pricing.TaskMeta)
         self.paid: int | None = None  # price of the fill that won the latest slice
         self.attempts = 0  # calls sent to the backend
         self.cancelled = False
@@ -70,6 +77,19 @@ class ExchangeCore:
         self._resting[bid_id] = task
         return self._fills(self._engine.buy(bid_id, task.bid, 1))
 
+    def resting(self) -> list[Task]:
+        return list(self._resting.values())
+
+    def reprice(self, task: Task, bid: int) -> list[Fill]:
+        """Replace the task's bid with one at a new price (cancel and place again).
+        It fills at once if an unsold slice is resting."""
+        if bid < self._reserve:
+            raise ValueError(f"bid {bid} is below the reserve price {self._reserve}")
+        if not self.cancel(task):
+            raise ValueError("task has no bid in the book")
+        task.bid = bid
+        return self.submit(task)
+
     def cancel(self, task: Task) -> bool:
         """Take the task's bid out of the book. False if it has no bid in the book,
         which means it already won and its call is on the way."""
@@ -101,12 +121,18 @@ class ExchangeGateway:
         clock=time.monotonic,
         on_event=None,
         reserve_price: int = 1,
+        rescore=None,
+        reprice_interval: float = 1.0,
     ):
-        """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events)."""
+        """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events).
+        `rescore(task, now)` returns the price a resting task should offer now; see Aging above."""
         self._send = send
         self._clock = clock
         self._on_event = on_event or (lambda _: None)
         self._core = ExchangeCore(engine, limit_per_minute, start=clock(), reserve_price=reserve_price)
+        self._rescore = rescore
+        self._reprice_interval = reprice_interval
+        self._next_reprice = clock() + reprice_interval
         self._cv = threading.Condition()
         self._inbox: deque[Task] = deque()  # bids waiting to be placed by the exchange thread
         self._stopped = False
@@ -123,8 +149,8 @@ class ExchangeGateway:
             self._cv.notify()
         self._thread.join()
 
-    def submit(self, request_id: str, bid: int) -> Task:
-        task = Task(request_id, bid)
+    def submit(self, request_id: str, bid: int, meta=None) -> Task:
+        task = Task(request_id, bid, meta)
         self._emit("request", task)
         with self._cv:
             self._inbox.append(task)
@@ -153,13 +179,31 @@ class ExchangeGateway:
                     task = self._inbox.popleft()
                     self._emit("bid", task, offered=task.bid)
                     fills += self._core.submit(task)
+                fills += self._age()
                 fills += self._core.tick(self._clock())
                 for fill in fills:
                     fill.task.paid = fill.paid
                     self._emit("fill", fill.task, paid=fill.paid, offered=fill.task.bid)
                     threading.Thread(target=self._run, args=(fill.task,), daemon=True).start()
                 if not self._inbox:
-                    self._cv.wait(max(0.0, self._core.next_deadline() - self._clock()))
+                    wake = self._core.next_deadline()
+                    if self._rescore:
+                        wake = min(wake, self._next_reprice)
+                    self._cv.wait(max(0.0, wake - self._clock()))
+
+    def _age(self) -> list[Fill]:
+        """Raise the bids that score higher now, once every reprice interval."""
+        now = self._clock()
+        if not self._rescore or now < self._next_reprice:
+            return []
+        self._next_reprice = now + self._reprice_interval
+        fills = []
+        for task in self._core.resting():
+            bid = self._rescore(task, now)
+            if bid > task.bid:
+                self._emit("reprice", task, offered=bid, previous=task.bid)
+                fills += self._core.reprice(task, bid)
+        return fills
 
     def _run(self, task: Task) -> None:
         task.attempts += 1

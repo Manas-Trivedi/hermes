@@ -10,15 +10,17 @@ A request's life is:
     request, [bid, fill,] forward, [rejected, [bid, fill,] forward, ...], result
     request, ..., cancelled          (a caller withdrew it before it was sent)
 
-`bid` and `fill` appear only on the exchange. `rejected` means the backend
-answered a forward with a 429, which is one wasted retry.
+`bid`, `fill` and `reprice` appear only on the exchange. `reprice` is a resting
+bid raised by aging (it can come any number of times between `bid` and `fill`).
+`rejected` means the backend answered a forward with a 429, which is one wasted
+retry.
 """
 
 import json
 import threading
 from collections import defaultdict
 
-KINDS = ("request", "bid", "fill", "forward", "rejected", "result", "cancelled")
+KINDS = ("request", "bid", "fill", "forward", "rejected", "result", "cancelled", "reprice")
 
 
 def make_event(kind: str, gateway: str, task, t: float, **fields) -> dict:

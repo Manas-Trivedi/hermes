@@ -5,7 +5,7 @@ import pytest
 from client import Engine
 from client.engine import DEFAULT_BINARY
 from experiments.tests.helpers import real_sender
-from gateway import ExchangeCore, ExchangeGateway, Task
+from gateway import ExchangeCore, ExchangeGateway, Task, check_lifecycle
 
 BINARY = os.environ.get("HERMES_ENGINE") or DEFAULT_BINARY
 pytestmark = pytest.mark.skipif(not os.path.exists(BINARY), reason=f"engine binary not built: {BINARY}")
@@ -104,3 +104,33 @@ def test_cancelled_task_is_never_sent_and_its_waiter_wakes():
             assert kept.wait(10) and kept.status == 200
     sent = [e["request_id"] for e in events if e["event"] == "forward"]
     assert sent == ["first", "kept"]
+
+
+def test_repriced_bid_competes_at_its_new_price_and_can_still_be_cancelled():
+    with Engine(arena=100) as engine:
+        core = ExchangeCore(engine, limit_per_minute=10, start=106.0)
+        lo, hi = Task("lo", 10), Task("hi", 50)
+        core.submit(lo)
+        core.submit(hi)
+        assert core.reprice(lo, 80) == [] and lo.bid == 80
+        assert set(core.resting()) == {lo, hi}
+        [fill] = core.tick(106.0)
+        assert fill.task is lo and fill.paid == 80
+        assert core.cancel(hi) is True  # the bid that was not repriced is still found
+        with pytest.raises(ValueError):
+            core.reprice(lo, 90)  # it already won, so it has no bid to replace
+
+
+def test_aging_raises_waiting_bids_so_an_old_cheap_task_overtakes_but_never_lowers_one():
+    events = []
+    rescore = lambda task, now: {"old": 100, "mid": 5}.get(task.request_id, task.bid)
+    with Engine(arena=1000) as engine, real_sender(300) as sender:
+        with ExchangeGateway(sender, engine, 300, on_event=events.append, rescore=rescore, reprice_interval=0.02) as gw:
+            first = gw.submit("first", 5)  # takes the slice resting at start
+            assert first.wait(10)
+            tasks = [gw.submit("mid", 30), gw.submit("old", 10)]  # slices come every 0.2s, aging every 0.02s
+            assert all(t.wait(10) for t in tasks)
+    assert [e["request_id"] for e in events if e["event"] == "forward"] == ["first", "old", "mid"]
+    repriced = [(e["request_id"], e["previous"], e["offered"]) for e in events if e["event"] == "reprice"]
+    assert repriced == [("old", 10, 100)]
+    assert check_lifecycle(events) == []
