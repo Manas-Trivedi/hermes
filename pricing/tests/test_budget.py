@@ -59,3 +59,20 @@ def test_time_until_a_price_is_affordable_follows_the_refill_rate():
     assert b.seconds_until("y", "a", 1, 0.0) == pytest.approx(0.5)
     assert b.seconds_until("x", "a", 20, 0.0) == 0.0  # its own hold is free to it
 
+
+
+def test_a_restart_gets_back_what_was_saved_plus_what_regenerated_while_it_was_away_up_to_the_cap():
+    def fresh():
+        return Budgets({"a": AgentConfig(1, 1), "b": AgentConfig(1, 1)}, pool=2.0, start=0.0, cap_seconds=10.0)  # 1/s each, cap 10
+
+    old = fresh()
+    old.hold("bid", "a", 5)
+    old.settle("bid", 5, now=0.0)
+    assert old.snapshot(now=3.0) == {"a": 8.0, "b": 10.0}  # 10 - 5 + 3 regenerated; b is full
+
+    new = fresh()
+    new.restore({"a": 8.0, "ghost": 3.0}, away={"a": 1.0, "ghost": 9.0}, now=100.0)  # the ghost is no longer configured
+    assert new.balance("a", 100.0) == 9.0 and new.balance("b", 100.0) == 10.0  # b was never saved, so it starts full
+    assert new.balance("a", 110.0) == 10.0  # and regenerates on from the restart
+    new.restore({"a": 9.5}, away={"a": 600.0}, now=100.0)
+    assert new.balance("a", 100.0) == 10.0  # a long absence cannot overfill it

@@ -55,6 +55,20 @@ class Budgets:
         self._updated[agent] = max(now, self._updated[agent])
         return self._balance[agent]
 
+    def snapshot(self, now: float) -> dict[str, float]:
+        """Every agent's balance now, for saving. Holds are left out on purpose: they belong to bids
+        resting in a book that does not survive a restart, so the saved balance is what is really owned."""
+        return {agent: self.balance(agent, now) for agent in self._balance}
+
+    def restore(self, saved: dict[str, float], away: dict[str, float], now: float) -> None:
+        """Start from balances saved earlier. `away[agent]` is the seconds since each was saved, during
+        which it kept regenerating. Agents that were not saved start full, and saved agents that are no
+        longer configured are ignored."""
+        for agent, balance in saved.items():
+            if agent in self._balance:
+                self._balance[agent] = min(self._caps[agent], balance + self.rates[agent] * max(0.0, away.get(agent, 0.0)))
+                self._updated[agent] = now
+
     def available(self, key, agent: str, now: float) -> int:
         """Whole credits `key` could hold now, counting the hold it already has as free.
         Zero if the agent's other bids already hold everything."""

@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS requests (
 
 ALTER TABLE requests ADD COLUMN IF NOT EXISTS tenant_id text;  -- for a database created before tenants
 
+-- The credit balance each tenant had when the proxy last saved, so a restart does not refill everyone.
+CREATE TABLE IF NOT EXISTS credit_balances (
+    tenant_id   text PRIMARY KEY,
+    balance     double precision NOT NULL,
+    saved_at    timestamptz NOT NULL DEFAULT now()
+);
+
 -- One row per bid placed, or placed again at a higher price by aging.
 CREATE TABLE IF NOT EXISTS orders (
     id          bigserial PRIMARY KEY,
