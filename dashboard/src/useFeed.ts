@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { applyToBook, emptyBook, type Book } from "./book";
 import { addEvent, parseEvent, type HermesEvent } from "./events";
-import { agentOf, applyToLives, emptyLives, type Lives } from "./lives";
+import { applyToLives, emptyLives, laneOf, type Lives } from "./lives";
+import { applyToTenants, emptyTenants, type Tenants } from "./tenants";
 
 export type Fill = { t: number; id: string; agent: string; paid: number; offered: number };
 
@@ -13,12 +14,13 @@ const RETRY_MS = 1000;
 
 // Follows the feed, reconnecting when it drops. Events from before the
 // connection are not replayed by the feed, so a reconnect leaves a gap.
-export function useFeed(url: string): { status: Status; events: HermesEvent[]; book: Book; fills: Fill[]; lives: Lives } {
+export function useFeed(url: string): { status: Status; events: HermesEvent[]; book: Book; fills: Fill[]; lives: Lives; tenants: Tenants } {
   const [status, setStatus] = useState<Status>("connecting");
   const [events, setEvents] = useState<HermesEvent[]>([]);
   const [book, setBook] = useState<Book>(emptyBook);
   const [fills, setFills] = useState<Fill[]>([]);
   const [lives, setLives] = useState<Lives>(emptyLives);
+  const [tenants, setTenants] = useState<Tenants>(emptyTenants);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -35,8 +37,9 @@ export function useFeed(url: string): { status: Status; events: HermesEvent[]; b
         setEvents((prev) => addEvent(prev, e));
         setBook((prev) => applyToBook(prev, e));
         setLives((prev) => applyToLives(prev, e));
+        setTenants((prev) => applyToTenants(prev, e));
         if (e.event === "fill") {
-          const fill = { t: e.t, id: e.request_id, agent: agentOf(e.request_id), paid: e.paid as number, offered: e.offered as number };
+          const fill = { t: e.t, id: e.request_id, agent: laneOf(e), paid: e.paid as number, offered: e.offered as number };
           setFills((prev) => [fill, ...prev].slice(0, MAX_FILLS));
         }
       };
@@ -55,5 +58,5 @@ export function useFeed(url: string): { status: Status; events: HermesEvent[]; b
     };
   }, [url]);
 
-  return { status, events, book, fills, lives };
+  return { status, events, book, fills, lives, tenants };
 }

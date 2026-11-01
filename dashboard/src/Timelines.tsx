@@ -1,6 +1,5 @@
 import { recentLives, type Lives } from "./lives";
 
-const AGENTS = ["support", "pr-review", "research"];
 const WINDOW = 60; // seconds of history shown
 const WIDTH = 600;
 const ROW = 12;
@@ -12,16 +11,16 @@ export function Timelines({ lives }: { lives: Lives }) {
   const x = (t: number) => Math.max(0, ((t - from) / WINDOW) * WIDTH);
   return (
     <section>
-      <h2>Agent timelines (last {WINDOW}s)</h2>
+      <h2>Timelines (last {WINDOW}s)</h2>
       <p>
         <span style={{ color: COLORS.waiting }}>■</span> waiting for a slice · <span style={{ color: COLORS.sending }}>■</span> with the backend · ✕ rejected (429)
       </p>
-      {AGENTS.map((agent) => {
+      {[...new Set([...lives.byId.values()].map((l) => l.agent))].sort().map((agent) => {
         const rows = recentLives(lives, agent, WINDOW);
         return (
           <div key={agent}>
             <b>{agent}</b> ({rows.length})
-            <svg width={WIDTH} height={Math.max(rows.length, 1) * ROW + 2} style={{ display: "block", background: "#f6f6f6" }}>
+            <svg width={WIDTH} height={Math.max(rows.length, 1) * ROW + 2} className="lane">
               {rows.map((life, row) =>
                 life.segments.map((s, i) => {
                   const end = s.end ?? lives.now;

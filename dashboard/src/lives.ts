@@ -25,6 +25,11 @@ export function agentOf(requestId: string): string {
   return AGENTS.find((a) => requestId.startsWith(a + "-")) ?? requestId.split("-")[0];
 }
 
+// The row a request is drawn on: the experiment's agents by name, anything else (the proxy's calls) by tenant.
+export function laneOf(e: HermesEvent): string {
+  return AGENTS.find((a) => e.request_id.startsWith(a + "-")) ?? (typeof e.tenant_id === "string" ? e.tenant_id : agentOf(e.request_id));
+}
+
 export function applyToLives(lives: Lives, e: HermesEvent): Lives {
   if (e.event === "bid" || e.event === "reprice" || e.event === "fill") {
     return { ...lives, origin: lives.origin ?? e.t, now: Math.max(lives.now, e.t) };
@@ -34,7 +39,7 @@ export function applyToLives(lives: Lives, e: HermesEvent): Lives {
   const old = byId.get(e.request_id);
   const life: Life = old
     ? { ...old, segments: old.segments.map((s) => ({ ...s })) }
-    : { id: e.request_id, agent: agentOf(e.request_id), segments: [{ kind: "waiting", start: e.t, end: null }], done: null, status: null, rejections: 0 };
+    : { id: e.request_id, agent: laneOf(e), segments: [{ kind: "waiting", start: e.t, end: null }], done: null, status: null, rejections: 0 };
   const open = life.segments[life.segments.length - 1];
   const close = () => {
     if (open && open.end === null) open.end = e.t;

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { CONDITIONS, METRICS, experimentNames, perAgent, perCondition, type AgentSummary, type RunSummary, type Stat } from "./compare";
 
-const API_URL = new URLSearchParams(window.location.search).get("api") ?? "http://127.0.0.1:8766/runs";
 
 // Categorical slots 1-3 of the reference palette, one per condition and fixed
 // (color follows the condition, not its rank). The aqua is under 3:1 on white,
@@ -10,15 +9,15 @@ const COLORS = { fifo: "#2a78d6", priority: "#eb6834", exchange: "#1baf7a" };
 const INK = "#0b0b0b";
 const MUTED = "#52514e";
 
-const AGENTS_URL = API_URL.replace(/\/runs$/, "/agents");
-
 const PANEL = { w: 200, h: 140, top: 18, bottom: 6 };
 
 const fmt = (v: number | null | undefined, unit: string) => (v == null ? "–" : `${Number.isInteger(v) ? v : v.toFixed(1)}${unit}`);
 const fmtStat = (s: Stat | undefined, unit: string) =>
   !s ? "–" : s.n > 1 && s.mean != null ? `${fmt(s.mean, unit)} (${fmt(s.min, unit)}–${fmt(s.max, unit)})` : fmt(s.mean, unit);
 
-export function Comparison() {
+export function Comparison({ apiUrl }: { apiUrl: string }) {
+  const API_URL = apiUrl;
+  const AGENTS_URL = API_URL.replace(/\/runs$/, "/agents");
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
