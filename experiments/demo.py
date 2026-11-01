@@ -8,22 +8,16 @@ With --database the events are also stored in Postgres, as a new experiment run.
 """
 
 import argparse
-import threading
 import time
 
-from agents import BaselineAdapter, ExchangeAdapter, PromptSender
-from agents.workload import WorkloadConfig, build_agents, generate, run_workload
-from client import Engine
-from experiments.baselines import FifoDispatcher, Gateway, PriorityDispatcher
-from experiments.mock_backend import MockBackend, make_server
+from agents.workload import WorkloadConfig, generate
+from experiments.conditions import CONDITIONS, Settings, run_condition
 from feed import EventFeed
-from gateway import ExchangeGateway, HttpSender
-from pricing import Scorer
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Mock flow: the three agents through one gateway, streamed live")
-    p.add_argument("--gateway", choices=["exchange", "priority", "fifo"], default="exchange")
+    p.add_argument("--gateway", choices=CONDITIONS, default="exchange")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--duration", type=float, default=120.0, help="seconds over which new work arrives")
     p.add_argument("--limit", type=float, default=20.0, help="backend calls per minute (the workload wants about 27)")
@@ -33,12 +27,8 @@ def main() -> None:
     p.add_argument("--database", help="Postgres URL; also store the events as a new experiment run")
     a = p.parse_args()
 
-    backend = MockBackend(a.limit, a.seed, a.median, tolerance=0.05)
-    server = make_server(backend)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    sender = PromptSender(HttpSender(f"http://127.0.0.1:{server.server_port}/v1/complete"))
+    settings = Settings(limit=a.limit, median_latency=a.median)
     arrivals = generate(a.seed, WorkloadConfig(duration=a.duration))
-    scorer = Scorer()
 
     sinks = []
     writer = None
@@ -62,16 +52,7 @@ def main() -> None:
         print(f"running {len(arrivals)} items through the {a.gateway} gateway")
 
         try:
-            if a.gateway == "exchange":
-                rescore = lambda task, now: scorer.score(task.meta, now).price
-                with Engine(arena=10000) as engine:
-                    with ExchangeGateway(sender, engine, a.limit, on_event=on_event, rescore=rescore) as gw:
-                        results = run_workload(arrivals, build_agents(ExchangeAdapter(gw, scorer), sender))
-            else:
-                dispatcher = FifoDispatcher(a.limit) if a.gateway == "fifo" else PriorityDispatcher(a.limit)
-                with Gateway(sender, dispatcher, on_event=on_event) as gw:
-                    adapter = BaselineAdapter(gw, scorer if a.gateway == "priority" else None)
-                    results = run_workload(arrivals, build_agents(adapter, sender))
+            results, wasted = run_condition(a.gateway, arrivals, a.seed, settings, on_event=on_event)
             finished = True
         finally:
             if writer:
@@ -79,8 +60,7 @@ def main() -> None:
         if writer and finished:  # a run that failed stays unfinished, so it is never reported as a result
             with connect(a.database) as conn:
                 finish_run(conn, run_id)
-        print(f"done: {sum(r.ok for r in results)}/{len(results)} items ok, {gw.wasted_retries} wasted retries")
-    server.shutdown()
+        print(f"done: {sum(r.ok for r in results)}/{len(results)} items ok, {wasted} wasted retries")
 
 
 if __name__ == "__main__":

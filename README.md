@@ -54,14 +54,14 @@ Hermes is being built in the open, one small step at a time.
 | Bidder agents | PR review, support triage, research synthesis, and a seeded workload that drives them | Done |
 | Persistence and live feed | Postgres storage of every run, request, bid and fill, and a live WebSocket stream of gateway events | Done |
 | Dashboard | Live order book, fills, per-agent request timelines, and a FIFO vs priority vs exchange comparison of stored runs | Done |
-| Experiment | Same workload, three allocation strategies, published results | Planned |
+| Experiment | Same workload, three allocation strategies, published results | Runner built, no results yet |
 | Deployable service | OpenAI-compatible proxy, token-weighted capacity, API keys and budgets per team, restart safety, Docker image | Planned |
 
 No benchmark numbers yet. They will appear here once the experiment has actually been run.
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. Gateway events can be stored in Postgres and streamed over WebSocket. The dashboard shows a run live and compares stored runs. The experiment runner does not exist yet.
+Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. Gateway events can be stored in Postgres and streamed over WebSocket. The dashboard shows a run live and compares stored runs. An experiment runner plays the workload under all three conditions and stores the runs; the final metrics, sweeps and write-up are still to come.
 
 **Requirements**
 
@@ -131,6 +131,16 @@ uv run python -m store.api --database <url>
 ```
 
 Only runs that finished are shown, so a run that crashed halfway never passes for a result. A failure is a request that was cancelled or that ended on anything but a 200. The dashboard shows the latest run of each condition. This is a single-run view for checking that the pipe works, not the experiment: it has no repeated runs, seed sweeps or credit budgets, and its numbers are not results.
+
+**Run the experiment**
+
+The runner plays the same seeded workload through FIFO, priority scheduling with aging and the exchange (with credit budgets), one after the other, and stores every run in Postgres. For each seed it does this twice: once with all agents honest, and once with the PR review agent declaring every call as urgent and due now.
+
+```bash
+uv run python -m experiments.runner --database <url> --seeds 1,2,3
+```
+
+Each seed and variant is stored as its own experiment, so the dashboard's comparison shows the three conditions side by side. Runs go one at a time, because overlapping runs would be measuring each other. A run that fails stays unfinished and the runner stops with the error. The settings that matter (backend limit, priority aging rate, credit pool) are flags, and they are recorded with every run. A full default run is slow: each run lasts a couple of minutes, and a seed makes six of them.
 
 **Drive the book from the command line**
 
