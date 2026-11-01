@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CONDITIONS, METRICS, experimentNames, latestPerCondition, type RunSummary } from "./compare";
+import { CONDITIONS, METRICS, experimentNames, perAgent, perCondition, type AgentSummary, type RunSummary, type Stat } from "./compare";
 
 const API_URL = new URLSearchParams(window.location.search).get("api") ?? "http://127.0.0.1:8766/runs";
 
@@ -10,20 +10,26 @@ const COLORS = { fifo: "#2a78d6", priority: "#eb6834", exchange: "#1baf7a" };
 const INK = "#0b0b0b";
 const MUTED = "#52514e";
 
+const AGENTS_URL = API_URL.replace(/\/runs$/, "/agents");
+
 const PANEL = { w: 200, h: 140, top: 18, bottom: 6 };
 
 const fmt = (v: number | null | undefined, unit: string) => (v == null ? "–" : `${Number.isInteger(v) ? v : v.toFixed(1)}${unit}`);
+const fmtStat = (s: Stat | undefined, unit: string) =>
+  !s ? "–" : s.n > 1 && s.mean != null ? `${fmt(s.mean, unit)} (${fmt(s.min, unit)}–${fmt(s.max, unit)})` : fmt(s.mean, unit);
 
 export function Comparison() {
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
 
+  const get = (url: string) => fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
   const load = () =>
-    fetch(API_URL)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((body) => {
-        setRuns(body.runs);
+    Promise.all([get(API_URL), get(AGENTS_URL)])
+      .then(([r, a]) => {
+        setRuns(r.runs);
+        setAgents(a.agents);
         setError(null);
       })
       .catch((e) => setError(String(e.message ?? e)));
@@ -34,7 +40,9 @@ export function Comparison() {
 
   const names = experimentNames(runs ?? []);
   const chosen = name && names.includes(name) ? name : names[0];
-  const byCondition = chosen ? latestPerCondition(runs ?? [], chosen) : {};
+  const byCondition = chosen ? perCondition(runs ?? [], chosen) : {};
+  const byAgent = chosen ? perAgent(runs ?? [], agents, chosen) : {};
+  const repeats = Math.max(0, ...CONDITIONS.map((c) => byCondition[c]?.failures.n ?? 0));
 
   return (
     <section>
@@ -68,12 +76,14 @@ export function Comparison() {
                 <span style={{ color: COLORS[c] }}>■</span> {c}
               </span>
             ))}
-            · lower is better in every panel
+            · lower is better in every panel · bar = mean over {repeats} run{repeats === 1 ? "" : "s"} per condition, line = lowest to highest
           </p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
             {METRICS.map((m) => {
-              const values = CONDITIONS.map((c) => byCondition[c]?.[m.key] ?? null);
-              const max = Math.max(...values.map((v) => v ?? 0), 1e-9);
+              const stats = CONDITIONS.map((c) => byCondition[c]?.[m.key]);
+              const values = stats.map((s) => s?.mean ?? null);
+              const max = Math.max(...stats.map((s) => s?.max ?? 0), 1e-9);
+              const scale = (v: number) => PANEL.h - PANEL.bottom - (v / max) * (PANEL.h - PANEL.top - PANEL.bottom);
               const slot = PANEL.w / CONDITIONS.length;
               return (
                 <figure key={m.key} style={{ margin: 0 }}>
@@ -84,15 +94,18 @@ export function Comparison() {
                     <line x1={0} x2={PANEL.w} y1={PANEL.h - PANEL.bottom} y2={PANEL.h - PANEL.bottom} stroke={MUTED} />
                     {CONDITIONS.map((c, i) => {
                       const v = values[i];
-                      const barH = v == null ? 0 : (v / max) * (PANEL.h - PANEL.top - PANEL.bottom);
+                      const y = v == null ? PANEL.h - PANEL.bottom : scale(v);
+                      const barH = PANEL.h - PANEL.bottom - y;
                       const x = i * slot + slot * 0.2;
-                      const y = PANEL.h - PANEL.bottom - barH;
+                      const s = stats[i];
+                      const spread = s && s.n > 1 && s.min != null && s.max != null;
                       return (
                         <g key={c}>
                           <rect x={x} y={y} width={slot * 0.6} height={barH} fill={COLORS[c]} rx={3}>
-                            <title>{`${c}: ${fmt(v, m.unit)}`}</title>
+                            <title>{`${c}: ${fmtStat(s, m.unit)}`}</title>
                           </rect>
-                          <text x={x + slot * 0.3} y={y - 4} textAnchor="middle" fontSize={12} fill={INK}>
+                          {spread && <line x1={x + slot * 0.3} x2={x + slot * 0.3} y1={scale(s.min!)} y2={scale(s.max!)} stroke={INK} strokeWidth={1.5} />}
+                          <text x={x + slot * 0.3} y={(spread ? scale(s.max!) : y) - 4} textAnchor="middle" fontSize={12} fill={INK}>
                             {fmt(v, m.unit)}
                           </text>
                         </g>
@@ -105,13 +118,12 @@ export function Comparison() {
           </div>
           <details>
             <summary>Table</summary>
+            <p style={{ color: MUTED }}>mean (lowest–highest) over the runs of each condition</p>
             <table>
               <thead>
                 <tr>
                   <th align="left">condition</th>
-                  <th align="left">run</th>
-                  <th align="left">requests</th>
-                  <th align="left">completed</th>
+                  <th align="left">runs</th>
                   {METRICS.map((m) => (
                     <th key={m.key} align="left">
                       {m.title}
@@ -120,20 +132,44 @@ export function Comparison() {
                 </tr>
               </thead>
               <tbody>
-                {CONDITIONS.map((c) => {
-                  const r = byCondition[c];
-                  return (
-                    <tr key={c}>
+                {CONDITIONS.map((c) => (
+                  <tr key={c}>
+                    <td>{c}</td>
+                    <td>{byCondition[c]?.failures.n ?? "–"}</td>
+                    {METRICS.map((m) => (
+                      <td key={m.key}>{fmtStat(byCondition[c]?.[m.key], m.unit)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+          <details>
+            <summary>Per agent</summary>
+            <table>
+              <thead>
+                <tr>
+                  <th align="left">agent</th>
+                  <th align="left">condition</th>
+                  {METRICS.map((m) => (
+                    <th key={m.key} align="left">
+                      {m.title}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(byAgent).flatMap(([agent, conditions]) =>
+                  CONDITIONS.map((c) => (
+                    <tr key={agent + c}>
+                      <td>{agent}</td>
                       <td>{c}</td>
-                      <td>{r?.id ?? "–"}</td>
-                      <td>{r?.requests ?? "–"}</td>
-                      <td>{r?.completed ?? "–"}</td>
                       {METRICS.map((m) => (
-                        <td key={m.key}>{fmt(r?.[m.key], m.unit)}</td>
+                        <td key={m.key}>{fmtStat(conditions[c]?.[m.key], m.unit)}</td>
                       ))}
                     </tr>
-                  );
-                })}
+                  )),
+                )}
               </tbody>
             </table>
           </details>
