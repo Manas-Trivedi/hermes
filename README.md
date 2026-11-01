@@ -49,7 +49,8 @@ Hermes is being built in the open, one small step at a time.
 | Matching engine | Price-time priority order book with trade reporting and input rejection | Done |
 | Engine interface and scheduler | Drive the book from other processes, release capacity slices | Done |
 | Throttled gateway | Mock backend, FIFO and priority baselines, exchange-gated forwarding, shared event log | Done |
-| Urgency model | Explainable bid pricing, regenerating credit budgets | Planned |
+| Urgency model | Explainable bid pricing and aging of waiting bids | Done |
+| Credit budgets | Regenerating per-agent balances that cap bids | Planned |
 | Bidder agents | PR review, support triage, research synthesis | Planned |
 | Persistence and live feed | Event storage and a WebSocket stream | Planned |
 | Dashboard | Live order book, fills, FIFO vs priority vs exchange comparison | Planned |
@@ -60,7 +61,7 @@ No benchmark numbers yet. They will appear here once the experiment has actually
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine, its Python client and the capacity scheduler run today.
+Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways and the urgency scorer run today.
 
 **Requirements**
 
@@ -100,6 +101,20 @@ printf 'SELL 1 100 1\nBUY 8 105 1\nBOOK\n' | ./build/matcha --arena 1000
 ```
 
 The engine reads one command per line on stdin and writes one reply per command on stdout. It prints `READY` when it is up, and exits when stdin closes. The full command set and reply format are documented in the protocol notes under the engine directory.
+
+## How a bid is priced
+
+A task carries its tenant, when it was queued, an optional deadline, whether a person is waiting on it, and whether it is one call of a bulk job. The scorer turns these into a price made of named parts, and the price is exactly their sum:
+
+| Part | Effect |
+|---|---|
+| base | Every task starts here |
+| user facing | Adds points when a person is waiting |
+| batched | Takes points off calls of a bulk job, so interactive work goes first |
+| deadline | Rises from nothing to its full weight as the deadline gets closer, and stays there once it has passed |
+| wait | Grows with time spent queued, so old work is not starved |
+
+So when one task outbids another, the difference between their parts says why. A waiting bid is re-priced as time passes: if it now scores higher, it is cancelled and placed again at the new price. A bid is only ever raised. The weights are operator settings, and the current values are placeholders.
 
 ## Matching rules
 
