@@ -271,7 +271,9 @@ Point your agents' base URL at `http://<host>:8080/v1` and give each team its ow
 | Provider key, metrics token, database | `.env` | Secrets, kept out of the config file |
 | `HERMES_PORT` | `.env` | The port the proxy is published on, 8080 by default |
 
-Check it with `curl localhost:8080/health`. To stop it without dropping work, use `docker compose stop`: calls still waiting for a slice get a 503 with `Retry-After`, and calls already out get up to a minute to finish. Run one proxy per database. The dashboard is not part of the image yet.
+The dashboard is optional and not part of the proxy image. To use it, uncomment `[feed]` in `hermes.toml`, set `FEED_TOKEN` in `.env`, copy `dashboard-config.example.json` to `dashboard-config.json` with the same token in its feed address, and start it with `docker compose --profile dashboard up -d`. It is then at port 8081 and shows each tenant's waiting and finished calls, the book, the fills and timelines per tenant. The feed carries every tenant's traffic, so the proxy will not start a feed beyond localhost without a token.
+
+Check it with `curl localhost:8080/health`. To stop it without dropping work, use `docker compose stop`: calls still waiting for a slice get a 503 with `Retry-After`, and calls already out get up to a minute to finish. Run one proxy per database. 
 
 ## Recording and watching a run
 

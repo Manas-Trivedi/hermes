@@ -17,11 +17,13 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set it in .env}
       METRICS_TOKEN: ${METRICS_TOKEN:?set it in .env}
+      FEED_TOKEN: ${FEED_TOKEN:-}
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set it in .env}@db:5432/hermes
     volumes:
       - ./hermes.toml:/etc/hermes/hermes.toml:ro
     ports:
       - "${HERMES_PORT:-8080}:8080"
+      - "8765:8765"  # the live feed, if the config turns it on
     stop_grace_period: 90s  # the proxy gives calls already out up to 60s to finish
 
   db:
@@ -37,6 +39,16 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Optional: docker compose --profile dashboard up -d
+  dashboard:
+    profiles: ["dashboard"]
+    build: ../dashboard
+    restart: unless-stopped
+    volumes:
+      - ./dashboard-config.json:/usr/share/nginx/html/config.json:ro
+    ports:
+      - "8081:80"
 
 volumes:
   pgdata:

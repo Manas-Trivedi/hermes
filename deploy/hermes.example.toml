@@ -19,6 +19,12 @@ host = "0.0.0.0"                      # inside the container; keep the port at 8
 port = 8080
 metrics_token_env = "METRICS_TOKEN"   # /metrics needs this as a bearer token
 
+# The live feed the dashboard watches. Uncomment it, and set FEED_TOKEN in .env, to use the dashboard.
+# [feed]
+# host = "0.0.0.0"
+# port = 8765
+# token_env = "FEED_TOKEN"
+
 [database]
 url_env = "DATABASE_URL"
 balance_save_seconds = 5
