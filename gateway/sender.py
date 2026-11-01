@@ -20,10 +20,10 @@ class HttpSender:
         self._url = url
         self._timeout = timeout
 
-    def __call__(self, request_id: str) -> Reply:
+    def __call__(self, request_id: str, body: bytes = b"{}") -> Reply:
         """Send one request and return its reply. Connection failures raise."""
         req = urllib.request.Request(
-            self._url, data=b"{}", method="POST", headers={"X-Request-Id": request_id}
+            self._url, data=body, method="POST", headers={"X-Request-Id": request_id}
         )
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as r:
