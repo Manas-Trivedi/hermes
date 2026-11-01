@@ -137,7 +137,7 @@ uv run python -c "from store import connect, apply_schema; apply_schema(connect(
 uv run python -m store.api --database <url>
 ```
 
-Only runs that finished are shown, so a run that crashed halfway never passes for a result. A failure is a request that was cancelled or that ended on anything but a 200. The dashboard shows the latest run of each condition. This is a single-run view for checking that the pipe works, not the experiment: it has no repeated runs, seed sweeps or credit budgets, and its numbers are not results.
+The results server also breaks each run down per agent (`/agents`): the same five numbers for PR review, support and research, so you can see who a condition helps and who it hurts. Only runs that finished are shown, so a run that crashed halfway never passes for a result. A failure is a request that was cancelled or that ended on anything but a 200. The dashboard shows the latest run of each condition. This is a single-run view for checking that the pipe works, not the experiment: it has no repeated runs, seed sweeps or credit budgets, and its numbers are not results.
 
 **Run the experiment**
 

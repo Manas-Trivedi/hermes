@@ -5,7 +5,7 @@ import urllib.request
 import pytest
 
 from store import create_run, finish_run
-from store.api import make_server, run_summaries
+from store.api import agent_summaries, make_server, run_summaries
 from store.tests.helpers import temp_schema
 
 
@@ -54,6 +54,24 @@ def test_a_run_that_never_finished_is_not_reported():
         assert run_summaries(conn) == []
 
 
+def test_each_agent_gets_its_own_numbers_and_hyphenated_names_are_kept_whole():
+    with temp_schema() as (conn, _):
+        run = create_run(conn, "exp", "exchange")
+        add(conn, run, "pr-review-pr1-f1", 0.0, 10.0, "result", 200, rejections=2)  # not agent "pr"
+        add(conn, run, "pr-review-pr1-f2", 0.0, 4.0, "cancelled", None)
+        add(conn, run, "support-t1-triage", 5.0, 7.0, "result", 200)
+        add(conn, run, "mystery-1", 5.0, 6.0, "result", 200)
+        finish_run(conn, run)
+        unfinished = create_run(conn, "exp", "fifo")
+        add(conn, unfinished, "support-t1-triage", 0.0, 1.0, "result", 200)
+        by_agent = {r["agent"]: r for r in agent_summaries(conn)}
+        assert set(by_agent) == {"pr-review", "support", "other"}  # the unfinished run adds nothing
+        pr = by_agent["pr-review"]
+        assert (pr["requests"], pr["completed"], pr["failures"], pr["wasted_retries"], pr["completion_time"]) == (2, 1, 1, 2, 10.0)
+        assert by_agent["support"]["p95_latency"] == pytest.approx(2.0)
+        assert by_agent["support"]["completion_time"] == 2.0
+
+
 def test_runs_are_served_as_json_to_a_page_on_another_port():
     with temp_schema() as (conn, url):
         seeded(conn)
@@ -63,6 +81,8 @@ def test_runs_are_served_as_json_to_a_page_on_another_port():
             with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/runs") as r:
                 assert r.headers["Access-Control-Allow-Origin"] == "*"
                 assert json.load(r)["runs"][0]["wasted_retries"] == 3
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/agents") as r:
+                assert {a["run_id"] for a in json.load(r)["agents"]} == {1}
         finally:
             server.shutdown()
             server.server_close()
