@@ -32,13 +32,16 @@ def run_experiment(
     settings: Settings = Settings(),
     workload: WorkloadConfig = WorkloadConfig(),
     log=print,
+    conditions: tuple[str, ...] = CONDITIONS,
 ) -> list[int]:
-    """Run every condition for every (seed, variant). Returns the ids of the runs stored."""
+    """Run each condition for every (seed, variant). Returns the ids of the runs stored."""
+    if unknown := set(conditions) - set(CONDITIONS):
+        raise ValueError(f"unknown conditions {sorted(unknown)}")  # before any run is stored
     run_ids = []
     for seed in seeds:
         arrivals = generate(seed, workload)  # one stream per seed, shared by every condition and variant
         for variant, inflate in variants.items():
-            for condition in CONDITIONS:
+            for condition in conditions:
                 params = {**asdict(settings), **asdict(workload), "variant": variant, "inflate": sorted(inflate)}
                 with connect(url) as conn:
                     run_id = create_run(conn, f"{name}/{variant}/seed{seed}", condition, seed, params)
@@ -63,14 +66,17 @@ def main() -> None:
     p.add_argument("--limit", type=float, default=d.limit, help="backend calls per minute")
     p.add_argument("--median", type=float, default=d.median_latency, help="median backend latency in seconds")
     p.add_argument("--aging-rate", type=float, default=d.aging_rate, help="priority baseline: points per second waited")
+    p.add_argument("--equal-share", action="store_true", help="exchange: split the credit pool equally between agents")
+    p.add_argument("--conditions", default=",".join(CONDITIONS), help="comma-separated; a sweep of one setting only needs the condition it affects")
     p.add_argument("--pool", type=float, default=d.pool, help="exchange: credits per second across all agents")
     a = p.parse_args()
 
     variants = {HONEST: frozenset()}
     if a.inflate:
         variants[f"inflate-{a.inflate}"] = frozenset({a.inflate})
-    settings = replace(d, limit=a.limit, median_latency=a.median, aging_rate=a.aging_rate, pool=a.pool)
-    run_experiment(a.database, a.name, [int(s) for s in a.seeds.split(",")], variants, settings, WorkloadConfig(duration=a.duration))
+    settings = replace(d, limit=a.limit, median_latency=a.median, aging_rate=a.aging_rate, pool=a.pool, equal_share=a.equal_share)
+    run_experiment(a.database, a.name, [int(s) for s in a.seeds.split(",")], variants, settings, WorkloadConfig(duration=a.duration),
+                   conditions=tuple(a.conditions.split(",")))
 
 
 if __name__ == "__main__":

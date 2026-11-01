@@ -34,3 +34,26 @@ def test_every_seed_and_variant_stores_three_finished_runs_over_the_identical_wo
             by_variant.setdefault(name, set()).add(count)
         assert all(len(counts) == 1 for counts in by_variant.values())  # the same number of requests under all three conditions
         assert {r[3] for r in rows} == set(variants)
+
+
+def test_only_the_asked_conditions_run_and_a_typo_stores_nothing():
+    with temp_schema() as (conn, url):
+        ids = run_experiment(url, "exp", [1], {"honest": frozenset()}, FAST, BUSY, log=lambda _: None, conditions=("priority",))
+        assert [r[0] for r in conn.execute("SELECT condition FROM experiment_runs").fetchall()] == ["priority"] and len(ids) == 1
+        with pytest.raises(ValueError):
+            run_experiment(url, "exp", [1], {"honest": frozenset()}, FAST, BUSY, log=lambda _: None, conditions=("priority", "exchnge"))
+        assert conn.execute("SELECT count(*) FROM experiment_runs").fetchone()[0] == 1
+
+
+def test_equal_share_gives_every_agent_the_same_credit_rate_and_the_default_does_not(monkeypatch):
+    from agents.workload import generate
+    from experiments import conditions
+
+    seen = []
+    real = conditions.Budgets
+    monkeypatch.setattr(conditions, "Budgets", lambda *a, **k: seen.append(real(*a, **k)) or seen[-1])
+    arrivals = generate(1, BUSY)
+    for equal in (False, True):
+        conditions.run_condition("exchange", arrivals, 1, Settings(limit=600, median_latency=0.01, equal_share=equal), BUSY)
+    weighted, equal = (set(round(r, 6) for r in b.rates.values()) for b in seen)
+    assert len(weighted) == 3 and len(equal) == 1

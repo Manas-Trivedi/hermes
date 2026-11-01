@@ -18,7 +18,7 @@ from client import Engine
 from experiments.baselines import FifoDispatcher, Gateway, PriorityDispatcher
 from experiments.mock_backend import MockBackend, make_server
 from gateway import ExchangeGateway, HttpSender
-from pricing import Budgets, Scorer
+from pricing import AgentConfig, Budgets, Scorer
 
 CONDITIONS = ("fifo", "priority", "exchange")
 
@@ -29,6 +29,7 @@ class Settings:
     median_latency: float = 1.0
     aging_rate: float = 1.0  # priority baseline: points per second waited (swept in 8.3)
     pool: float = 10.0  # exchange: credits per second across all agents (see pricing.budget)
+    equal_share: bool = False  # exchange: split the pool equally instead of by demand times weight (swept in 8.3)
     cap_seconds: float = 60.0
     reprice_interval: float = 1.0
 
@@ -53,7 +54,10 @@ def run_condition(
     try:
         if condition == "exchange":
             rescore = lambda task, now: scorer.score(task.meta, now).price
-            budgets = Budgets(agent_configs(workload), time.monotonic(), s.pool, s.cap_seconds)
+            configs = agent_configs(workload)
+            if s.equal_share:
+                configs = dict.fromkeys(configs, AgentConfig())
+            budgets = Budgets(configs, time.monotonic(), s.pool, s.cap_seconds)
             with Engine(arena=10000) as engine:
                 with ExchangeGateway(
                     sender, engine, s.limit, on_event=on_event, rescore=rescore, reprice_interval=s.reprice_interval, budgets=budgets

@@ -147,7 +147,7 @@ The runner plays the same seeded workload through FIFO, priority scheduling with
 uv run python -m experiments.runner --database postgresql://postgres:hermes@localhost:5434/hermes --seeds 1,2,3
 ```
 
-Each seed and variant is stored as its own experiment, so the dashboard's comparison shows the three conditions side by side. Runs go one at a time, because overlapping runs would be measuring each other. A run that fails stays unfinished and the runner stops with the error. The settings that matter (backend limit, priority aging rate, credit pool) are flags, and they are recorded with every run. A full default run is slow: each run lasts a couple of minutes, and a seed makes six of them.
+Each seed and variant is stored as its own experiment, so the dashboard's comparison shows the three conditions side by side. Runs go one at a time, because overlapping runs would be measuring each other. A run that fails stays unfinished and the runner stops with the error. The settings that matter (backend limit, priority aging rate, credit pool, and `--equal-share` to split the pool equally instead of by demand times weight) are flags, and they are recorded with every run. `--conditions` runs only some conditions, since a sweep of the aging rate only affects priority and a sweep of the pool only affects the exchange. A full default run is slow: each run lasts a couple of minutes, and a seed makes six of them.
 
 **Drive the book from the command line**
 
