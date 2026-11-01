@@ -51,7 +51,7 @@ Hermes is being built in the open, one small step at a time.
 | Throttled gateway | Mock backend, FIFO and priority baselines, exchange-gated forwarding, shared event log | Done |
 | Urgency model | Explainable bid pricing and aging of waiting bids | Done |
 | Credit budgets | Regenerating per-agent balances that cap bids | Done |
-| Bidder agents | PR review, support triage, research synthesis | Planned |
+| Bidder agents | PR review, support triage, research synthesis, and a seeded workload that drives them | Done |
 | Persistence and live feed | Event storage and a WebSocket stream | Planned |
 | Dashboard | Live order book, fills, FIFO vs priority vs exchange comparison | Planned |
 | Experiment | Same workload, three allocation strategies, published results | Planned |
@@ -115,6 +115,20 @@ A task carries its tenant, when it was queued, an optional deadline, whether a p
 | wait | Grows with time spent queued, so old work is not starved |
 
 So when one task outbids another, the difference between their parts says why. A waiting bid is re-priced as time passes: if it now scores higher, it is cancelled and placed again at the new price. A bid is only ever raised. The weights are operator settings, and the current values are placeholders.
+
+## The agents
+
+Three agents make the calls. They send them through whichever gateway is under test, so the same agents run under FIFO, priority scheduling and the exchange.
+
+| Agent | Work | Urgency it declares |
+|---|---|---|
+| PR review | One call per changed file, all at once, then a summary | Nobody is waiting, loose deadline |
+| Support | Triage a ticket, then answer it | A customer is waiting, tight deadline |
+| Research | A burst of one call per paper, then a synthesis | Nobody is waiting, medium deadline |
+
+An agent whose call runs out of patience cancels it, and a stage that fails stops the rest of that piece of work so no capacity is spent on a result nobody can use. Any agent can be made dishonest, declaring every call as urgent and due now, to test whether the exchange resists inflated priorities.
+
+The workload is generated from a seed: the same seed gives the same arrivals and the same work, and changing one agent's rate leaves the other two agents' work exactly as it was. The mock backend ignores what a prompt says, so prompts are filler; what the experiment varies is when each call arrives and how urgent it is.
 
 ## Credit budgets
 
