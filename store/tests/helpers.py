@@ -17,14 +17,15 @@ def require_database():
 
 @contextmanager
 def temp_schema():
-    """A connection whose tables live in a throwaway schema, dropped on exit."""
+    """A connection and a URL, both pointing at tables in a throwaway schema dropped on exit."""
     require_database()
     name = f"t_{uuid.uuid4().hex[:12]}"
     with connect(URL, autocommit=True) as admin:
         admin.execute(f"CREATE SCHEMA {name}")
         try:
-            with connect(URL, options=f"-c search_path={name}") as conn:
+            url = f"{URL}?options=-c%20search_path%3D{name}"
+            with connect(url) as conn:
                 apply_schema(conn)
-                yield conn
+                yield conn, url
         finally:
             admin.execute(f"DROP SCHEMA {name} CASCADE")

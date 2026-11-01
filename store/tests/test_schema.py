@@ -13,14 +13,14 @@ def seed_request(conn):
 
 
 def test_apply_twice_keeps_data():
-    with temp_schema() as conn:
+    with temp_schema() as (conn, _):
         seed_request(conn)
         apply_schema(conn)
         assert conn.execute("SELECT count(*) FROM requests").fetchone()[0] == 1
 
 
 def test_orders_and_fills_need_a_known_request():
-    with temp_schema() as conn:
+    with temp_schema() as (conn, _):
         run_id = seed_request(conn)
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             conn.execute("INSERT INTO fills (run_id, request_id, attempt, paid, offered, t) VALUES (%s, 'nope', 0, 1, 1, 0)", (run_id,))
@@ -30,7 +30,7 @@ def test_orders_and_fills_need_a_known_request():
 
 
 def test_deleting_a_run_removes_its_rows():
-    with temp_schema() as conn:
+    with temp_schema() as (conn, _):
         run_id = seed_request(conn)
         conn.execute("INSERT INTO orders (run_id, request_id, attempt, kind, offered, t) VALUES (%s, 'a', 0, 'bid', 5, 0)", (run_id,))
         conn.execute("DELETE FROM experiment_runs WHERE id = %s", (run_id,))
