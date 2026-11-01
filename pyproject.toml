@@ -5,6 +5,7 @@ description = "Agent compute exchange"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.3.6",
+    "websockets>=17.4",
 ]
 
 [dependency-groups]
@@ -15,10 +16,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["client*", "scheduler*", "gateway*", "experiments*", "pricing*", "agents*", "store*"]
+include = ["client*", "scheduler*", "gateway*", "experiments*", "pricing*", "agents*", "store*", "feed*"]
 
 [tool.pytest.ini_options]
-testpaths = ["client/tests", "scheduler/tests", "gateway/tests", "experiments/tests", "pricing/tests", "agents/tests", "store/tests"]
+testpaths = ["client/tests", "scheduler/tests", "gateway/tests", "experiments/tests", "pricing/tests", "agents/tests", "store/tests", "feed/tests"]
 pythonpath = ["."]
 
 [tool.setuptools.package-data]
