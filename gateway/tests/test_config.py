@@ -56,3 +56,11 @@ def test_a_provider_key_variable_that_is_not_set_fails_at_startup_not_on_the_fir
         load(write(tmp_path, BASE), environ={})
     with pytest.raises(ConfigError, match="TOML"):
         load(write(tmp_path, "[upstream"), environ={})
+
+
+def test_the_database_url_is_read_from_the_named_variable_and_its_absence_is_loud(tmp_path):
+    text = BASE.split("[[tenants]]")[0].replace('api_key_env = "PROVIDER_KEY"', "") + '[database]\nurl_env = "DB"\nbalance_save_seconds = 2\n'
+    c = load(write(tmp_path, text), environ={"DB": "postgresql://x"})
+    assert (c.database_url, c.balance_save_seconds) == ("postgresql://x", 2.0)
+    with pytest.raises(ConfigError, match="DB"):
+        load(write(tmp_path, text), environ={})

@@ -201,6 +201,11 @@ class ExchangeGateway:
             self._cv.notify()
         return task
 
+    def balances(self) -> dict[str, float]:
+        """Every tenant's credit balance now, for saving. Empty without budgets."""
+        with self._cv:
+            return self._budgets.snapshot(self._clock()) if self._budgets else {}
+
     def cancel(self, task: Task) -> bool:
         """Withdraw a task that has not won yet. False if it already won (the call
         is going out) or is done. The lock serializes this with the exchange thread,

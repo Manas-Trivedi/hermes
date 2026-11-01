@@ -20,6 +20,10 @@
     pool = 60.0                      # credits per second across all tenants; default: requests_per_minute
     cap_seconds = 60.0               # seconds of credit a tenant can bank
 
+    [database]                       # optional: without it nothing survives a restart
+    url_env = "DATABASE_URL"         # the environment variable holding the Postgres URL
+    balance_save_seconds = 5         # how often credit balances are saved
+
     [[tenants]]                      # none: the proxy is open and has no budgets (local use)
     id = "acme"
     share = 2.0                      # its slice of the credit pool, relative to the other tenants
@@ -60,6 +64,8 @@ class Config:
     port: int = 8080
     pool: float | None = None
     cap_seconds: float = 60.0
+    database_url: str | None = None
+    balance_save_seconds: float = 5.0
     tenants: list[Tenant] = field(default_factory=list)
     keys: dict[str, Tenant] = field(default_factory=dict)  # sha256 of an API key -> its tenant
 
@@ -92,7 +98,7 @@ def load(path, environ=os.environ) -> Config:
             raw = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path} is not valid TOML: {e}") from None
-    upstream, limits, server, credits = (raw.get(k, {}) for k in ("upstream", "limits", "server", "credits"))
+    upstream, limits, server, credits, database = (raw.get(k, {}) for k in ("upstream", "limits", "server", "credits", "database"))
     if not isinstance(upstream.get("url"), str) or not upstream["url"].startswith(("http://", "https://")):
         raise ConfigError("upstream.url must be an http(s) URL")
     key = None
@@ -100,6 +106,11 @@ def load(path, environ=os.environ) -> Config:
         if not environ.get(env):
             raise ConfigError(f"upstream.api_key_env names {env}, which is not set")
         key = environ[env]
+    database_url = None
+    if (env := database.get("url_env")) is not None:
+        if not environ.get(env):
+            raise ConfigError(f"database.url_env names {env}, which is not set")
+        database_url = environ[env]
     tenants, keys = [], {}
     for entry in raw.get("tenants", []):
         tenant = Tenant(entry.get("id"), _positive(entry.get("share", 1.0), "a tenant's share"))
@@ -125,6 +136,8 @@ def load(path, environ=os.environ) -> Config:
         port=_positive(server.get("port", 8080), "server.port", int),
         pool=None if "pool" not in credits else _positive(credits["pool"], "credits.pool"),
         cap_seconds=_positive(credits.get("cap_seconds", 60.0), "credits.cap_seconds"),
+        database_url=database_url,
+        balance_save_seconds=_positive(database.get("balance_save_seconds", 5.0), "database.balance_save_seconds"),
         tenants=tenants,
         keys=keys,
     )

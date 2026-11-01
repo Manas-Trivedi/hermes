@@ -47,6 +47,20 @@ def finish_run(conn, run_id: int) -> None:
     conn.commit()
 
 
+def close_unfinished_runs(conn, name: str) -> int:
+    """Close the runs called `name` that a crash left open: their in-flight requests become cancelled
+    (error "restarted") and the runs finish. Call it once at startup, when nothing else is writing
+    them, so there must be a single process per name. Returns the number of runs closed."""
+    conn.execute(
+        "UPDATE requests SET outcome = 'cancelled', error = 'restarted' WHERE outcome IS NULL AND run_id IN"
+        " (SELECT id FROM experiment_runs WHERE name = %s AND finished_at IS NULL)",
+        (name,),
+    )
+    closed = conn.execute("UPDATE experiment_runs SET finished_at = now() WHERE name = %s AND finished_at IS NULL", (name,)).rowcount
+    conn.commit()
+    return closed
+
+
 class EventWriter:
     def __init__(self, url: str, run_id: int):
         self._run_id = run_id
@@ -59,6 +73,11 @@ class EventWriter:
     def __call__(self, event: dict) -> None:
         if not self._error:  # the writer is dead; do not pile up events nobody will write
             self._queue.put(event)
+
+    @property
+    def error(self) -> BaseException | None:
+        """The failure that stopped the writer, if any. Events after it are dropped."""
+        return self._error
 
     def close(self) -> None:
         """Write what is queued, stop, and raise if any write failed."""

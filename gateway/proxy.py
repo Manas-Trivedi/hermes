@@ -36,12 +36,22 @@ slows the release rate (`adaptive`, scheduler.capacity). In tenant
 mode the credentials upstream are the proxy's own, so a provider 401 or 403 is
 our fault, not the client's, and becomes a 502.
 
+Restarts: with a database, every event is stored (the process's lifetime is
+one run called "proxy"), each tenant's credit balance is saved every few seconds
+and on shutdown, and the next start picks the balances up and lets them keep
+regenerating for the time the proxy was down. The book itself is not saved: it
+starts empty. On a clean shutdown the calls still waiting for a slice are
+answered 503 at once, and the ones already out are given time to finish. After a
+crash, the requests the dead process left open are marked cancelled. This needs a
+single proxy process per database, which the in-memory book needs anyway.
+
 Parsing a body runs off the event loop. Nothing in the reply is parsed.
 """
 
 import argparse
 import asyncio
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -55,6 +65,10 @@ from gateway.exchange import ExchangeGateway
 from gateway.sender import Reply
 from gateway.tokens import estimate_tokens
 from pricing import AgentConfig, Budgets, Scorer, TaskMeta
+from store import EventWriter, close_unfinished_runs, connect, create_run, finish_run, load_balances, save_balances
+
+log = logging.getLogger("hermes.proxy")
+RUN_NAME = "proxy"
 
 CHAT_PATH = "/v1/chat/completions"
 MAX_BODY = 64 * 1024 * 1024
@@ -123,6 +137,7 @@ class _Call:
     request: web.Request
     body: bytes
     done: asyncio.Future  # resolved with the response to return, once the call has been answered
+    task: object = None  # the exchange's Task for the call
     rejections: int = 0  # provider 429s so far
 
 
@@ -131,7 +146,7 @@ class Proxy:
                  default_max_tokens: int = 1024, scorer: Scorer | None = None, on_event=None, clock=time.monotonic,
                  keys: dict | None = None, upstream_key: str | None = None, pool: float | None = None, cap_seconds: float = 60.0,
                  upstream_timeout: float = 120.0, max_rate_limit_retries: int = 3,
-                 adaptive: bool = True):
+                 adaptive: bool = True, database: str | None = None, balance_save_seconds: float = 5.0):
         """`keys` maps the sha256 of an API key to its Tenant (gateway.config); without it the proxy is open."""
         self._upstream = upstream
         self._engine = engine
@@ -144,6 +159,12 @@ class Proxy:
         self._upstream_timeout = upstream_timeout
         self._max_retries = max_rate_limit_retries
         self._adaptive = adaptive
+        self._database = database
+        self._balance_save_seconds = balance_save_seconds
+        self._writer: EventWriter | None = None
+        self._run_id: int | None = None
+        self._saver: asyncio.Task | None = None
+        self.balance_save_failures = 0
         self._keys = keys or {}
         self._upstream_key = upstream_key
         self._budgets = None
@@ -159,12 +180,14 @@ class Proxy:
     def from_config(cls, config: Config, engine: Engine, **kw) -> "Proxy":
         return cls(config.upstream_url, engine, config.requests_per_minute, config.tokens_per_minute, config.default_max_tokens,
                    keys=config.keys, upstream_key=config.upstream_key, pool=config.pool, cap_seconds=config.cap_seconds,
-                   upstream_timeout=config.timeout_seconds, max_rate_limit_retries=config.max_rate_limit_retries, adaptive=config.adaptive, **kw)
+                   upstream_timeout=config.timeout_seconds, max_rate_limit_retries=config.max_rate_limit_retries, adaptive=config.adaptive,
+                   database=config.database_url, balance_save_seconds=config.balance_save_seconds, **kw)
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
         app.router.add_post(CHAT_PATH, self._chat)
         app.on_startup.append(self._start)
+        app.on_shutdown.append(self._drain)
         app.on_cleanup.append(self._stop)
         return app
 
@@ -174,16 +197,74 @@ class Proxy:
         # because the exchange, not the pool, decides how many calls are out.
         self._session = aiohttp.ClientSession(auto_decompress=False, connector=aiohttp.TCPConnector(limit=0),
                                               timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=self._upstream_timeout))
+        if self._database:
+            await self._loop.run_in_executor(None, self._open_database)
         self._gateway = ExchangeGateway(
-            self._send, self._engine, self._limit, clock=self._clock, on_event=self._on_event,
+            self._send, self._engine, self._limit, clock=self._clock, on_event=self._events(),
             rescore=lambda task, now: self._scorer.score(task.meta, now).price, tokens_per_minute=self._tokens_per_minute,
             budgets=self._budgets, adaptive=self._adaptive,
         )
         self._gateway.__enter__()
+        if self._database and self._budgets:
+            self._saver = asyncio.create_task(self._save_balances_forever())
+
+    def _open_database(self) -> None:
+        """Close what a crash left open, restore the saved balances, and start this process's run."""
+        with connect(self._database) as conn:
+            if closed := close_unfinished_runs(conn, RUN_NAME):
+                log.warning("closed %d run(s) left open by a crash; their in-flight requests are marked cancelled", closed)
+            if self._budgets:
+                saved, away = load_balances(conn)
+                self._budgets.restore(saved, away, self._clock())
+            self._run_id = create_run(conn, RUN_NAME, "exchange", params={"requests_per_minute": self._limit, "tokens_per_minute": self._tokens_per_minute})
+        self._writer = EventWriter(self._database, self._run_id)
+
+    def _events(self):
+        sinks = [s for s in (self._on_event, self._writer) if s is not None]
+        return (lambda event: [sink(event) for sink in sinks]) if sinks else None
+
+    async def _save_balances_forever(self) -> None:
+        while True:
+            await asyncio.sleep(self._balance_save_seconds)
+            await self._save_balances()
+
+    async def _save_balances(self) -> None:
+        try:
+            balances = await self._loop.run_in_executor(None, self._gateway.balances)
+            await self._loop.run_in_executor(None, self._write_balances, balances)
+        except Exception:
+            self.balance_save_failures += 1
+            log.exception("could not save credit balances (%d failures so far)", self.balance_save_failures)
+
+    def _write_balances(self, balances: dict[str, float]) -> None:
+        with connect(self._database) as conn:
+            save_balances(conn, balances)
+
+    async def _drain(self, app) -> None:
+        """Shutting down: answer the calls still waiting for a slice with a 503 instead of making them wait."""
+        for call in list(self._calls.values()):
+            if call.task is not None and self._gateway.cancel(call.task) and not call.done.done():
+                call.done.set_result(web.json_response(
+                    {"error": {"message": "the proxy is restarting; try again", "type": "server_error", "code": None}},
+                    status=503, headers={"Retry-After": "1"}))
 
     async def _stop(self, app) -> None:
+        if self._saver:
+            self._saver.cancel()
         await self._loop.run_in_executor(None, self._gateway.__exit__, None, None, None)
+        if self._database:
+            if self._budgets:
+                await self._save_balances()
+            await self._loop.run_in_executor(None, self._close_database)
         await self._session.close()
+
+    def _close_database(self) -> None:
+        try:
+            self._writer.close()
+        except RuntimeError:
+            log.exception("events were lost: the event writer failed")
+        with connect(self._database) as conn:
+            finish_run(conn, self._run_id)
 
     def _tenant(self, request: web.Request) -> str | None:
         """The id of the tenant whose API key the request carries, or None."""
@@ -207,7 +288,7 @@ class Proxy:
         request_id = f"proxy-{uuid.uuid4().hex}"
         call = _Call(request, body, self._loop.create_future())
         self._calls[request_id] = call
-        task = self._gateway.submit(request_id, self._scorer.score(meta, now).price, meta, tokens)
+        call.task = task = self._gateway.submit(request_id, self._scorer.score(meta, now).price, meta, tokens)
         try:
             return await call.done
         finally:
@@ -268,6 +349,7 @@ def main() -> None:
     p.add_argument("--config", required=True, help="the TOML config file (gateway/config.py)")
     p.add_argument("--arena", type=int, default=10000, help="most bids the book can hold at once")
     a = p.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
         config = load(a.config)
     except (OSError, ConfigError) as e:

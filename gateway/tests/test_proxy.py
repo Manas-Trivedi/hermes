@@ -11,6 +11,8 @@ from aiohttp import web
 from client import Engine
 from client.engine import DEFAULT_BINARY
 from gateway.proxy import CHAT_PATH, RUNNER_ARGS, Proxy
+from store import create_run
+from store.tests.helpers import temp_schema
 
 BINARY = os.environ.get("HERMES_ENGINE") or DEFAULT_BINARY
 pytestmark = pytest.mark.skipif(not os.path.exists(BINARY), reason=f"engine binary not built: {BINARY}")
@@ -333,8 +335,8 @@ def test_a_provider_that_keeps_saying_429_is_retried_a_few_times_then_the_client
     run(scenario)
 
 
-def test_a_retry_after_date_does_not_break_the_retry_and_slows_the_exchange_down():
-    calls, events = [], []
+def test_a_retry_after_date_does_not_break_the_retry():
+    calls = []
 
     async def provider(request):
         calls.append(1)
@@ -347,5 +349,74 @@ def test_a_retry_after_date_does_not_break_the_retry_and_slows_the_exchange_down
             async with client.post(url, json=CHAT) as r:
                 assert r.status == 200
         assert len(calls) == 2
+
+    run(scenario)
+
+
+OK = {"Authorization": "Bearer k1"}
+
+
+async def ok_provider(request):
+    return web.json_response({})
+
+
+def test_events_and_balances_survive_a_restart_and_the_balance_keeps_regenerating():
+    with temp_schema() as (conn, url):
+        keys = tenants(("acme", 1, "k1"))
+
+        async def first_life():
+            async with running(ok_provider, keys=keys, pool=10, cap_seconds=60, database=url) as (client, front):
+                async with client.post(front, json=CHAT, headers={**OK, "X-Hermes-User-Facing": "true"}) as r:
+                    assert r.status == 200
+
+        run(first_life)
+        row = conn.execute("SELECT r.finished_at IS NOT NULL, q.tenant_id, q.outcome, q.status FROM experiment_runs r JOIN requests q ON q.run_id = r.id").fetchone()
+        assert row == (True, "acme", "result", 200)  # the run was finished and the request stored with its tenant
+        saved = conn.execute("SELECT balance FROM credit_balances WHERE tenant_id = 'acme'").fetchone()[0]
+        assert saved < 600  # a full balance is 10 credits a second for 60 seconds; the win spent some
+
+        async def second_life():
+            with Engine(arena=100) as engine:
+                proxy = Proxy("http://127.0.0.1:1/x", engine, 600, keys=keys, pool=10, cap_seconds=60, database=url)
+                front, _ = await serve(proxy.app(), **RUNNER_ARGS)
+                try:
+                    assert saved <= proxy._gateway.balances()["acme"] < 600  # not refilled by the restart
+                finally:
+                    await front.cleanup()
+
+        run(second_life)
+
+
+def test_a_crash_leaves_open_requests_that_the_next_start_marks_cancelled():
+    with temp_schema() as (conn, url):
+        dead = create_run(conn, "proxy", "exchange")
+        conn.execute("INSERT INTO requests (run_id, request_id, gateway, t_request) VALUES (%s, 'lost', 'exchange', 1.0)", (dead,))
+        conn.commit()
+
+        async def scenario():
+            async with running(ok_provider, database=url):
+                pass
+
+        run(scenario)
+        assert conn.execute("SELECT outcome, error FROM requests WHERE request_id = 'lost'").fetchone() == ("cancelled", "restarted")
+        assert conn.execute("SELECT finished_at IS NOT NULL FROM experiment_runs WHERE id = %s", (dead,)).fetchone()[0]
+
+
+def test_shutting_down_answers_the_calls_still_waiting_with_a_503_instead_of_leaving_them_hanging():
+    events = []
+
+    async def scenario():
+        upstream, upstream_url = await serve(_app(ok_provider))
+        with Engine(arena=100) as engine:
+            front, url = await serve(Proxy(upstream_url + CHAT_PATH, engine, 6, on_event=events.append).app(), **RUNNER_ARGS)  # a slice every 10s
+            async with aiohttp.ClientSession() as client:
+                async with client.post(url + CHAT_PATH, json=CHAT) as r:  # takes the slice resting at start
+                    assert r.status == 200
+                waiting = asyncio.create_task(client.post(url + CHAT_PATH, json=CHAT))
+                await until(lambda: [e["event"] for e in events].count("bid") == 2)
+                await front.cleanup()
+                async with await waiting as r:
+                    assert r.status == 503 and r.headers["Retry-After"] == "1"
+        await upstream.cleanup()
 
     run(scenario)
