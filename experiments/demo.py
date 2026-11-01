@@ -42,10 +42,11 @@ def main() -> None:
 
     sinks = []
     writer = None
+    finished = False
     with EventFeed(port=a.feed_port) as feed:
         sinks.append(feed)
         if a.database:
-            from store import EventWriter, connect, create_run
+            from store import EventWriter, connect, create_run, finish_run
 
             with connect(a.database) as conn:
                 run_id = create_run(conn, "demo", a.gateway, seed=a.seed, params=vars(a))
@@ -71,9 +72,13 @@ def main() -> None:
                 with Gateway(sender, dispatcher, on_event=on_event) as gw:
                     adapter = BaselineAdapter(gw, scorer if a.gateway == "priority" else None)
                     results = run_workload(arrivals, build_agents(adapter, sender))
+            finished = True
         finally:
             if writer:
                 writer.close()
+        if writer and finished:  # a run that failed stays unfinished, so it is never reported as a result
+            with connect(a.database) as conn:
+                finish_run(conn, run_id)
         print(f"done: {sum(r.ok for r in results)}/{len(results)} items ok, {gw.wasted_retries} wasted retries")
     server.shutdown()
 
