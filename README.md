@@ -204,6 +204,22 @@ Without a cost for urgency, every agent would bid its maximum. So each agent has
 
 Providers cap tokens per minute as well as requests per minute. The exchange gateway takes an optional tokens-per-minute limit. A slice stays one request, but each request that wins is charged its estimated tokens (its prompt at about four characters a token, plus the most it may generate), and the next slice is held back until those tokens are repaid at the token rate. So the release rate follows whichever limit is stricter, and a large request delays the line behind it instead of paying a bigger price. The estimate is a budget, not a count; correcting it with the usage the provider reports comes with the OpenAI-compatible surface. Without a token limit nothing changes.
 
+## The proxy
+
+`gateway.proxy` is the drop-in endpoint. Agents point their base URL at it and keep calling `POST /v1/chat/completions`, streamed or not. Each call is priced (prompt size, `max_tokens`, optional urgency headers), waits in the exchange until it wins a slice, and only then goes to the provider. The reply is passed back byte for byte.
+
+```bash
+uv run python -m gateway.proxy --upstream https://api.openai.com/v1/chat/completions --limit 60 --tokens-per-minute 90000
+```
+
+| Header | Meaning |
+|---|---|
+| `X-Hermes-User-Facing: true` | A person is waiting on the answer |
+| `X-Hermes-Deadline-Seconds: 30` | When the answer is needed, from now |
+| `X-Hermes-Batch: <id>` | One call of a bulk job |
+
+All are optional and are removed before the call goes to the provider. A provider 429 is retried behind the scenes. A request that cannot be priced gets a 400, and an unreachable provider a 502, both in OpenAI's error format. The client's `Authorization` header is passed through for now. Not done yet: API keys and budgets per team, timeouts, and cancelling the bid of a client that disconnects.
+
 ## Recording and watching a run
 
 Every gateway reports each step of a request's life (request, bid, fill, forward, rejected, result, cancelled) as an event. Two listeners can be attached to any gateway, on their own or together:
