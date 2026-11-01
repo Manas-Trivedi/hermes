@@ -149,6 +149,12 @@ uv run python -m experiments.runner --database postgresql://postgres:hermes@loca
 
 Each seed and variant is stored as its own experiment, so the dashboard's comparison shows the three conditions side by side. Runs go one at a time, because overlapping runs would be measuring each other. A run that fails stays unfinished and the runner stops with the error. The settings that matter (backend limit, priority aging rate, credit pool, and `--equal-share` to split the pool equally instead of by demand times weight) are flags, and they are recorded with every run. `--conditions` runs only some conditions, since a sweep of the aging rate only affects priority and a sweep of the pool only affects the exchange. A full default run is slow: each run lasts a couple of minutes, and a seed makes six of them.
 
+To read the stored results as tables instead (mean over seeds with the range, a table per agent, and how often the exchange beat each baseline seed by seed):
+
+```bash
+uv run python -m experiments.report --database postgresql://postgres:hermes@localhost:5434/hermes
+```
+
 **Drive the book from the command line**
 
 ```bash
