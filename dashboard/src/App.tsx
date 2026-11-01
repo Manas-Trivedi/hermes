@@ -1,10 +1,12 @@
+import { Fills } from "./Fills";
 import { OrderBook } from "./OrderBook";
+import { Timelines } from "./Timelines";
 import { useFeed } from "./useFeed";
 
 const FEED_URL = new URLSearchParams(window.location.search).get("feed") ?? "ws://127.0.0.1:8765";
 
 export function App() {
-  const { status, events, book } = useFeed(FEED_URL);
+  const { status, events, book, fills, lives } = useFeed(FEED_URL);
   return (
     <main style={{ fontFamily: "monospace", padding: 16 }}>
       <h1>Hermes</h1>
@@ -12,6 +14,8 @@ export function App() {
         feed {FEED_URL}: <b>{status}</b> · {events.length} recent events
       </p>
       <OrderBook book={book} />
+      <Fills fills={fills} />
+      <Timelines lives={lives} />
       <h2>Recent events</h2>
       <table>
         <thead>
