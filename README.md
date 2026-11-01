@@ -50,7 +50,7 @@ Hermes is being built in the open, one small step at a time.
 | Engine interface and scheduler | Drive the book from other processes, release capacity slices | Done |
 | Throttled gateway | Mock backend, FIFO and priority baselines, exchange-gated forwarding, shared event log | Done |
 | Urgency model | Explainable bid pricing and aging of waiting bids | Done |
-| Credit budgets | Regenerating per-agent balances that cap bids | Planned |
+| Credit budgets | Regenerating per-agent balances that cap bids | Done |
 | Bidder agents | PR review, support triage, research synthesis | Planned |
 | Persistence and live feed | Event storage and a WebSocket stream | Planned |
 | Dashboard | Live order book, fills, FIFO vs priority vs exchange comparison | Planned |
@@ -115,6 +115,15 @@ A task carries its tenant, when it was queued, an optional deadline, whether a p
 | wait | Grows with time spent queued, so old work is not starved |
 
 So when one task outbids another, the difference between their parts says why. A waiting bid is re-priced as time passes: if it now scores higher, it is cancelled and placed again at the new price. A bid is only ever raised. The weights are operator settings, and the current values are placeholders.
+
+## Credit budgets
+
+Without a cost for urgency, every agent would bid its maximum. So each agent has a balance of credits that refills at a steady rate and stops growing at a cap, which lets unused credits carry over without piling up forever.
+
+- A bid can offer no more than the agent can afford, and there is no overdraft. An agent that cannot afford even the minimum price waits, and can still cancel, until its credits refill.
+- A bid holds its credits while it waits, so one balance cannot back many bids at once. A cancelled bid gives them back.
+- Winning spends the price actually paid. If the backend rejects a call that already won, the retry pays again.
+- Refill rates are set by the operator, never by the agents: each agent gets a share of a total pool in proportion to its expected demand times its business weight. The demands, the weights, the pool and the cap are all settings. By default every agent counts the same and the pool matches the experiment's expected load, and they are meant to be set before a run.
 
 ## Matching rules
 

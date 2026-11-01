@@ -18,6 +18,7 @@ class TaskMeta:
     deadline: float | None = None  # when the result is needed by; None if nobody is waiting on a time
     user_facing: bool = False  # a person is waiting on the answer
     batch_id: str | None = None  # set if the task is one call of a bulk job
+    agent_id: str | None = None  # which agent's credit budget pays for the task (4.5)
 
 
 @dataclass(frozen=True)

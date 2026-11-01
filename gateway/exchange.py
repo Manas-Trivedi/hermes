@@ -22,6 +22,14 @@ Aging: given `rescore(task, now)`, the gateway re-prices every resting bid each
 and placed again at the new price, which gives it a new id and a later place in
 the queue at that price. A bid is only ever raised, never lowered, so the price
 a waiting task offers cannot fall.
+
+Budgets: given `budgets` (pricing.Budgets), every task needs `meta.agent_id`. A
+bid offers at most what its agent can afford. There is no overdraft: a task whose
+agent cannot afford even the reserve price is not bid yet, and waits (still
+cancellable) until credits come back. The bid holds its credits while it rests,
+a win spends the price paid, and a cancel gives the hold back. A raise from aging is capped the same way. A call
+the backend rejects with a 429 has already spent its credits, so its re-bid
+spends again.
 """
 
 import threading
@@ -123,6 +131,7 @@ class ExchangeGateway:
         reserve_price: int = 1,
         rescore=None,
         reprice_interval: float = 1.0,
+        budgets=None,
     ):
         """`send(request_id)` returns a Reply. `on_event(dict)` sees every step (gateway.events).
         `rescore(task, now)` returns the price a resting task should offer now; see Aging above."""
@@ -131,6 +140,9 @@ class ExchangeGateway:
         self._on_event = on_event or (lambda _: None)
         self._core = ExchangeCore(engine, limit_per_minute, start=clock(), reserve_price=reserve_price)
         self._rescore = rescore
+        self._budgets = budgets
+        self._reserve = reserve_price
+        self._unfunded: list[Task] = []  # tasks waiting for their agent to afford the reserve price
         self._reprice_interval = reprice_interval
         self._next_reprice = clock() + reprice_interval
         self._cv = threading.Condition()
@@ -164,8 +176,12 @@ class ExchangeGateway:
         with self._cv:
             if task in self._inbox:
                 self._inbox.remove(task)
+            elif task in self._unfunded:
+                self._unfunded.remove(task)
             elif not self._core.cancel(task):
                 return False
+            if self._budgets:
+                self._budgets.release(task)
         task.cancelled = True
         self._emit("cancelled", task)
         task._done.set()
@@ -174,22 +190,52 @@ class ExchangeGateway:
     def _loop(self) -> None:
         with self._cv:
             while not self._stopped:
-                fills = []
-                while self._inbox:
-                    task = self._inbox.popleft()
-                    self._emit("bid", task, offered=task.bid)
-                    fills += self._core.submit(task)
+                fills = self._admit()
                 fills += self._age()
                 fills += self._core.tick(self._clock())
                 for fill in fills:
                     fill.task.paid = fill.paid
+                    if self._budgets:
+                        self._budgets.settle(fill.task, fill.paid, self._clock())
                     self._emit("fill", fill.task, paid=fill.paid, offered=fill.task.bid)
                     threading.Thread(target=self._run, args=(fill.task,), daemon=True).start()
                 if not self._inbox:
                     wake = self._core.next_deadline()
                     if self._rescore:
                         wake = min(wake, self._next_reprice)
-                    self._cv.wait(max(0.0, wake - self._clock()))
+                    now = self._clock()
+                    for task in self._unfunded:
+                        wake = min(wake, now + self._budgets.seconds_until(task, task.meta.agent_id, self._reserve, now))
+                    self._cv.wait(max(0.0, wake - now))
+
+    def _admit(self) -> list[Fill]:
+        """Place the queued tasks that can be paid for; the rest wait, in arrival order."""
+        fills = []
+        while self._inbox:
+            task = self._inbox.popleft()
+            if self._budgets:
+                self._unfunded.append(task)
+            else:
+                fills += self._place(task)
+        waiting = []
+        for task in self._unfunded:
+            if self._affordable(task, task.bid) >= self._reserve:
+                fills += self._place(task)
+            else:
+                waiting.append(task)
+        self._unfunded = waiting
+        return fills
+
+    def _place(self, task: Task) -> list[Fill]:
+        asked = task.bid
+        if self._budgets:
+            task.bid = self._affordable(task, asked)
+            self._budgets.hold(task, task.meta.agent_id, task.bid)
+        self._emit("bid", task, offered=task.bid, asked=asked)
+        return self._core.submit(task)
+
+    def _affordable(self, task: Task, bid: int) -> int:
+        return min(bid, self._budgets.available(task, task.meta.agent_id, self._clock()))
 
     def _age(self) -> list[Fill]:
         """Raise the bids that score higher now, once every reprice interval."""
@@ -200,7 +246,11 @@ class ExchangeGateway:
         fills = []
         for task in self._core.resting():
             bid = self._rescore(task, now)
+            if self._budgets:
+                bid = self._affordable(task, bid)
             if bid > task.bid:
+                if self._budgets:
+                    self._budgets.hold(task, task.meta.agent_id, bid)
                 self._emit("reprice", task, offered=bid, previous=task.bid)
                 fills += self._core.reprice(task, bid)
         return fills

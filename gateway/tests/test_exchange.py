@@ -1,10 +1,12 @@
 import os
+import time
 
 import pytest
 
 from client import Engine
 from client.engine import DEFAULT_BINARY
 from experiments.tests.helpers import real_sender
+from pricing import AgentConfig, Budgets, TaskMeta
 from gateway import ExchangeCore, ExchangeGateway, Task, check_lifecycle
 
 BINARY = os.environ.get("HERMES_ENGINE") or DEFAULT_BINARY
@@ -134,3 +136,84 @@ def test_aging_raises_waiting_bids_so_an_old_cheap_task_overtakes_but_never_lowe
     repriced = [(e["request_id"], e["previous"], e["offered"]) for e in events if e["event"] == "reprice"]
     assert repriced == [("old", 10, 100)]
     assert check_lifecycle(events) == []
+
+
+def make_budgets():
+    """Agents warm, rich and poor with starting balances 1000, 80 and 20 (rates 100, 8, 2 per second)."""
+    agents = {"warm": AgentConfig(1, 100), "rich": AgentConfig(1, 8), "poor": AgentConfig(1, 2)}
+    return Budgets(agents, pool=110.0, start=time.monotonic(), cap_seconds=10.0)
+
+
+def test_bids_are_capped_at_the_balance_and_a_win_spends_what_was_paid():
+    events = []
+    budgets = make_budgets()
+    with Engine(arena=1000) as engine, real_sender(300) as sender:
+        with ExchangeGateway(sender, engine, 300, on_event=events.append, budgets=budgets) as gw:
+            first = gw.submit("first", 5, TaskMeta("t", 0.0, agent_id="warm"))  # takes the slice resting at start
+            assert first.wait(10)
+            rich = gw.submit("rich", 1000, TaskMeta("t", 0.0, agent_id="rich"))
+            poor = gw.submit("poor", 1000, TaskMeta("t", 0.0, agent_id="poor"))
+            assert rich.wait(10) and poor.wait(10)
+    offers = {e["request_id"]: (e["asked"], e["offered"]) for e in events if e["event"] == "bid"}
+    assert offers["rich"] == (1000, 80) and offers["poor"] == (1000, 20)
+    assert (rich.paid, poor.paid) == (80, 20)
+    now = time.monotonic()
+    assert budgets.balance("rich", now) < 10  # spent all 80, and only a moment of regeneration since
+    assert budgets.balance("poor", now) < 10
+
+
+def test_a_task_the_agent_cannot_afford_waits_unbid_until_credits_regenerate():
+    events = []
+    with Engine(arena=1000) as engine, real_sender(300) as sender:
+        with ExchangeGateway(sender, engine, 300, on_event=events.append, budgets=make_budgets()) as gw:
+            first = gw.submit("first", 5, TaskMeta("t", 0.0, agent_id="warm"))
+            assert first.wait(10)
+            drain = gw.submit("drain", 1000, TaskMeta("t", 0.0, agent_id="poor"))  # bids and pays all 20
+            assert drain.wait(10) and drain.paid == 20
+            broke = gw.submit("broke", 1000, TaskMeta("t", 0.0, agent_id="poor"))  # 2 credits a second
+            assert broke.wait(10) and broke.status == 200
+    when = {(e["request_id"], e["event"]): e["t"] for e in events}
+    assert when["broke", "bid"] - when["broke", "request"] >= 0.3  # about half a second to earn the reserve
+    assert check_lifecycle(events) == []
+
+
+def test_a_task_waiting_for_credits_can_be_cancelled_and_is_never_bid():
+    events = []
+    with Engine(arena=1000) as engine, real_sender(300) as sender:
+        with ExchangeGateway(sender, engine, 300, on_event=events.append, budgets=make_budgets()) as gw:
+            first = gw.submit("first", 5, TaskMeta("t", 0.0, agent_id="warm"))
+            assert first.wait(10)
+            drain = gw.submit("drain", 1000, TaskMeta("t", 0.0, agent_id="poor"))
+            assert drain.wait(10)
+            broke = gw.submit("broke", 1000, TaskMeta("t", 0.0, agent_id="poor"))
+            assert gw.cancel(broke) is True and broke.wait(1) and broke.cancelled
+    assert not [e for e in events if e["request_id"] == "broke" and e["event"] in ("bid", "forward")]
+
+
+def test_a_cancelled_bid_gives_its_credits_back_to_the_agent():
+    budgets, events = make_budgets(), []
+    with Engine(arena=1000) as engine, real_sender(300) as sender:
+        with ExchangeGateway(sender, engine, 300, on_event=events.append, budgets=budgets) as gw:
+            first = gw.submit("first", 5, TaskMeta("t", 0.0, agent_id="warm"))
+            assert first.wait(10)
+            big = gw.submit("big", 1000, TaskMeta("t", 0.0, agent_id="rich"))
+            while not [e for e in events if e["request_id"] == "big" and e["event"] == "bid"]:
+                time.sleep(0.001)  # resting in the book, holding its 80 credits
+            assert budgets.available("other", "rich", time.monotonic()) < 5
+            assert gw.cancel(big) is True
+            assert budgets.available("other", "rich", time.monotonic()) >= 79
+
+
+def test_aging_cannot_raise_a_bid_past_what_the_agent_can_afford():
+    events = []
+    budgets = make_budgets()
+    rescore = lambda task, now: 1000
+    with Engine(arena=1000) as engine, real_sender(300) as sender:
+        with ExchangeGateway(sender, engine, 300, on_event=events.append, rescore=rescore,
+                             reprice_interval=0.02, budgets=budgets) as gw:
+            first = gw.submit("first", 5, TaskMeta("t", 0.0, agent_id="warm"))
+            assert first.wait(10)
+            rich = gw.submit("rich", 10, TaskMeta("t", 0.0, agent_id="rich"))
+            assert rich.wait(10)
+    repriced = [(e["previous"], e["offered"]) for e in events if e["event"] == "reprice" and e["request_id"] == "rich"]
+    assert repriced == [(10, 80)]
