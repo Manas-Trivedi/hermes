@@ -20,7 +20,7 @@ from store.db import connect
 _STOP = object()
 BATCH = 500
 
-_INSERT_REQUEST = "INSERT INTO requests (run_id, request_id, gateway, t_request) VALUES (%s, %s, %s, %s)"
+_INSERT_REQUEST = "INSERT INTO requests (run_id, request_id, gateway, tenant_id, t_request) VALUES (%s, %s, %s, %s, %s)"
 _INSERT_ORDER = (
     "INSERT INTO orders (run_id, request_id, attempt, kind, offered, asked, previous, t)"
     " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
@@ -97,7 +97,7 @@ class EventWriter:
         execute = self._conn.execute
         update = self._update
         if kind == "request":
-            execute(_INSERT_REQUEST, (run, rid, e["gateway"], e["t"]))
+            execute(_INSERT_REQUEST, (run, rid, e["gateway"], e.get("tenant_id"), e["t"]))
         elif kind in ("bid", "reprice"):
             execute(_INSERT_ORDER, (run, rid, e["attempt"], kind, e["offered"], e.get("asked"), e.get("previous"), e["t"]))
         elif kind == "fill":

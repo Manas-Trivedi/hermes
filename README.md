@@ -209,8 +209,27 @@ Providers cap tokens per minute as well as requests per minute. The exchange gat
 `gateway.proxy` is the drop-in endpoint. Agents point their base URL at it and keep calling `POST /v1/chat/completions`, streamed or not. Each call is priced (prompt size, `max_tokens`, optional urgency headers), waits in the exchange until it wins a slice, and only then goes to the provider. The reply is passed back byte for byte.
 
 ```bash
-uv run python -m gateway.proxy --upstream https://api.openai.com/v1/chat/completions --limit 60 --tokens-per-minute 90000
+uv run python -m gateway.proxy --config hermes.toml
 ```
+
+The config file (TOML) holds everything an operator sets:
+
+```toml
+[upstream]
+url = "https://api.openai.com/v1/chat/completions"
+api_key_env = "OPENAI_API_KEY"   # the environment variable holding the provider's key
+
+[limits]
+requests_per_minute = 60
+tokens_per_minute = 90000        # optional
+
+[[tenants]]
+id = "acme"
+share = 2.0                      # its slice of the credit pool, relative to the other tenants
+api_keys = ["sk-hermes-..."]
+```
+
+With tenants listed, every request must carry `Authorization: Bearer <api key>` of one of them (otherwise 401). The key picks the tenant. Each tenant has its own credit balance, refilled in proportion to its share, so one team cannot spend another's urgency. The tenant is on every event the request produces and is stored with it. The client's key is never sent to the provider; the proxy uses its own. Without any tenants the proxy is open and has no budgets, which is for local use. Keys are held only as hashes once loaded. The other settings (`[server]`, `[credits]`, `default_max_tokens`) are described at the top of the config module.
 
 | Header | Meaning |
 |---|---|
@@ -218,7 +237,7 @@ uv run python -m gateway.proxy --upstream https://api.openai.com/v1/chat/complet
 | `X-Hermes-Deadline-Seconds: 30` | When the answer is needed, from now |
 | `X-Hermes-Batch: <id>` | One call of a bulk job |
 
-All are optional and are removed before the call goes to the provider. A provider 429 is retried behind the scenes. A request that cannot be priced gets a 400, and an unreachable provider a 502, both in OpenAI's error format. The client's `Authorization` header is passed through for now. Not done yet: API keys and budgets per team, timeouts, and cancelling the bid of a client that disconnects.
+All are optional and are removed before the call goes to the provider. A provider 429 is retried behind the scenes. A request that cannot be priced gets a 400, and an unreachable provider a 502, both in OpenAI's error format. Not done yet: timeouts, and cancelling the bid of a client that disconnects.
 
 ## Recording and watching a run
 

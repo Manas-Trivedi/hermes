@@ -1,6 +1,6 @@
 """The drop-in proxy: an OpenAI-compatible endpoint that schedules calls through the exchange.
 
-    uv run python -m gateway.proxy --upstream https://api.openai.com/v1/chat/completions --limit 60
+    uv run python -m gateway.proxy --config hermes.toml
 
 Agents point their base URL here. POST /v1/chat/completions is read just far
 enough to price it (prompt size, max_tokens, optional urgency headers), then
@@ -12,6 +12,14 @@ winning call on a thread of its own and wants a status back, so `send` hands the
 call to this event loop and waits. The loop opens the upstream request, and only
 once it has a status other than 429 starts answering the client. A 429 is
 reported to the gateway, which bids again, and the client never sees it.
+
+Tenants: with `[[tenants]]` in the config, every request must carry
+`Authorization: Bearer <api key>` of one of them (else 401). The key picks the
+tenant, which is on every event of the request and pays from its own credit
+budget (pricing.Budgets, one balance per tenant, the pool split by `share`).
+The client's key is never sent upstream: the provider's own key from the config
+replaces it. With no tenants the proxy is open, has no budgets, and passes the
+client's Authorization through, which is for local use.
 
 Urgency headers (all optional, removed before the call goes upstream):
     X-Hermes-User-Facing: true|false    a person is waiting
@@ -32,10 +40,11 @@ import aiohttp
 from aiohttp import web
 
 from client import Engine
+from gateway.config import Config, ConfigError, hash_key, load
 from gateway.exchange import ExchangeGateway
 from gateway.sender import Reply
 from gateway.tokens import estimate_tokens
-from pricing import Scorer, TaskMeta
+from pricing import AgentConfig, Budgets, Scorer, TaskMeta
 
 CHAT_PATH = "/v1/chat/completions"
 MAX_BODY = 64 * 1024 * 1024
@@ -75,7 +84,7 @@ def inspect_body(body: bytes, default_max_tokens: int) -> int:
     return estimate_tokens("".join(texts), max_tokens)
 
 
-def urgency(headers, now: float, tenant_id: str = "default") -> TaskMeta:
+def urgency(headers, now: float, tenant_id: str = "default") -> TaskMeta:  # agent_id is set by the caller
     """Task metadata from the X-Hermes-* headers. Raises BadRequest on a value it cannot read."""
     flag = headers.get("X-Hermes-User-Facing", "false").strip().lower()
     if flag not in ("true", "false"):
@@ -86,7 +95,8 @@ def urgency(headers, now: float, tenant_id: str = "default") -> TaskMeta:
             deadline = now + float(seconds)
         except ValueError:
             raise BadRequest("X-Hermes-Deadline-Seconds must be a number") from None
-    return TaskMeta(tenant_id=tenant_id, enqueued_at=now, deadline=deadline, user_facing=flag == "true", batch_id=headers.get("X-Hermes-Batch"))
+    return TaskMeta(tenant_id=tenant_id, enqueued_at=now, deadline=deadline, user_facing=flag == "true",
+                    batch_id=headers.get("X-Hermes-Batch"), agent_id=tenant_id)  # a tenant's budget pays for its calls
 
 
 @dataclass
@@ -98,7 +108,9 @@ class _Call:
 
 class Proxy:
     def __init__(self, upstream: str, engine: Engine, limit_per_minute: float, tokens_per_minute: float | None = None,
-                 default_max_tokens: int = 1024, scorer: Scorer | None = None, on_event=None, clock=time.monotonic):
+                 default_max_tokens: int = 1024, scorer: Scorer | None = None, on_event=None, clock=time.monotonic,
+                 keys: dict | None = None, upstream_key: str | None = None, pool: float | None = None, cap_seconds: float = 60.0):
+        """`keys` maps the sha256 of an API key to its Tenant (gateway.config); without it the proxy is open."""
         self._upstream = upstream
         self._engine = engine
         self._limit = limit_per_minute
@@ -107,10 +119,21 @@ class Proxy:
         self._scorer = scorer or Scorer()
         self._on_event = on_event
         self._clock = clock
+        self._keys = keys or {}
+        self._upstream_key = upstream_key
+        self._budgets = None
+        if self._keys:
+            tenants = {t.id: AgentConfig(1.0, t.share) for t in self._keys.values()}
+            self._budgets = Budgets(tenants, clock(), pool if pool is not None else limit_per_minute, cap_seconds)
         self._calls: dict[str, _Call] = {}
         self._loop: asyncio.AbstractEventLoop
         self._session: aiohttp.ClientSession
         self._gateway: ExchangeGateway
+
+    @classmethod
+    def from_config(cls, config: Config, engine: Engine, **kw) -> "Proxy":
+        return cls(config.upstream_url, engine, config.requests_per_minute, config.tokens_per_minute, config.default_max_tokens,
+                   keys=config.keys, upstream_key=config.upstream_key, pool=config.pool, cap_seconds=config.cap_seconds, **kw)
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
@@ -128,6 +151,7 @@ class Proxy:
         self._gateway = ExchangeGateway(
             self._send, self._engine, self._limit, clock=self._clock, on_event=self._on_event,
             rescore=lambda task, now: self._scorer.score(task.meta, now).price, tokens_per_minute=self._tokens_per_minute,
+            budgets=self._budgets,
         )
         self._gateway.__enter__()
 
@@ -135,12 +159,23 @@ class Proxy:
         await self._loop.run_in_executor(None, self._gateway.__exit__, None, None, None)
         await self._session.close()
 
+    def _tenant(self, request: web.Request) -> str | None:
+        """The id of the tenant whose API key the request carries, or None."""
+        scheme, _, key = request.headers.get("Authorization", "").partition(" ")
+        tenant = self._keys.get(hash_key(key.strip())) if scheme.lower() == "bearer" else None
+        return tenant.id if tenant else None
+
     async def _chat(self, request: web.Request) -> web.StreamResponse:
+        tenant_id = "default"
+        if self._keys:
+            tenant_id = self._tenant(request)
+            if tenant_id is None:
+                return error_response(401, "missing or unknown API key", "invalid_request_error")
         body = await request.read()
         now = self._clock()
         try:
             tokens = await self._loop.run_in_executor(None, inspect_body, body, self._default_max_tokens)
-            meta = urgency(request.headers, now)
+            meta = urgency(request.headers, now, tenant_id)
         except BadRequest as e:
             return error_response(400, str(e), "invalid_request_error")
         request_id = f"proxy-{uuid.uuid4().hex}"
@@ -162,6 +197,10 @@ class Proxy:
             return Reply(499)
         try:
             headers = {k: v for k, v in call.request.headers.items() if k.lower() not in _NOT_FORWARDED and not k.lower().startswith("x-hermes-")}
+            if self._keys:  # the client's key is ours, not the provider's
+                headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+                if self._upstream_key:
+                    headers["Authorization"] = f"Bearer {self._upstream_key}"
             async with self._session.post(self._upstream, data=call.body, headers=headers) as upstream:
                 if upstream.status == 429:
                     return Reply(429, float(upstream.headers.get("Retry-After") or 0))
@@ -178,7 +217,7 @@ class Proxy:
                 return Reply(upstream.status)
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if not call.done.done():
-                call.done.set_result(error_response(502, f"upstream failed: {e!r}", "api_connection_error"))
+                call.done.set_result(error_response(502, f"upstream failed: {type(e).__name__}", "api_connection_error"))
             return Reply(502)
         except BaseException:
             if not call.done.done():
@@ -188,17 +227,15 @@ class Proxy:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="OpenAI-compatible proxy that schedules calls through the exchange")
-    p.add_argument("--upstream", required=True, help="the provider's chat completions URL")
-    p.add_argument("--limit", type=float, required=True, help="requests per minute the provider allows")
-    p.add_argument("--tokens-per-minute", type=float, default=None, help="tokens per minute the provider allows")
-    p.add_argument("--default-max-tokens", type=int, default=1024, help="output allowance for a request that sets none")
-    p.add_argument("--host", default="127.0.0.1", help="0.0.0.0 inside a container")
-    p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--config", required=True, help="the TOML config file (gateway/config.py)")
     p.add_argument("--arena", type=int, default=10000, help="most bids the book can hold at once")
     a = p.parse_args()
+    try:
+        config = load(a.config)
+    except (OSError, ConfigError) as e:
+        raise SystemExit(f"config error: {e}")
     with Engine(arena=a.arena) as engine:
-        proxy = Proxy(a.upstream, engine, a.limit, a.tokens_per_minute, a.default_max_tokens)
-        web.run_app(proxy.app(), host=a.host, port=a.port, print=lambda *_: None)
+        web.run_app(Proxy.from_config(config, engine).app(), host=config.host, port=config.port, print=lambda *_: None)
 
 
 if __name__ == "__main__":

@@ -24,10 +24,13 @@ KINDS = ("request", "bid", "fill", "forward", "rejected", "result", "cancelled",
 
 
 def make_event(kind: str, gateway: str, task, t: float, **fields) -> dict:
-    """`task` needs `request_id` and `attempts`. `t` is monotonic seconds."""
+    """`task` needs `request_id` and `attempts`; a `meta.tenant_id` is added to the event. `t` is monotonic seconds."""
     if kind not in KINDS:
         raise ValueError(f"unknown event kind {kind!r}")
-    return {"event": kind, "gateway": gateway, "request_id": task.request_id, "t": t, "attempt": task.attempts, **fields}
+    event = {"event": kind, "gateway": gateway, "request_id": task.request_id, "t": t, "attempt": task.attempts, **fields}
+    if (tenant_id := getattr(getattr(task, "meta", None), "tenant_id", None)) is not None:
+        event["tenant_id"] = tenant_id  # on every event of a task that has a tenant
+    return event
 
 
 class EventLog:

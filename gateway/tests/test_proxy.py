@@ -181,3 +181,54 @@ def test_a_provider_that_is_down_gives_a_502_in_the_openai_error_shape():
                 await front.cleanup()
 
     run(scenario)
+
+
+def tenants(*specs):
+    """The `keys` a Proxy takes, from (tenant id, share, api key) triples."""
+    from gateway.config import Tenant, hash_key
+
+    return {hash_key(key): Tenant(name, share) for name, share, key in specs}
+
+
+def test_with_tenants_a_missing_or_unknown_key_is_refused_and_the_provider_sees_its_own_key_never_the_clients():
+    seen = []
+
+    async def provider(request):
+        seen.append(request.headers["Authorization"])
+        return web.json_response({})
+
+    async def scenario():
+        async with running(provider, keys=tenants(("acme", 1, "k1")), upstream_key="sk-provider") as (client, url):
+            for headers in ({}, {"Authorization": "Bearer nope"}, {"Authorization": "k1"}):
+                async with client.post(url, json=CHAT, headers=headers) as r:
+                    assert r.status == 401 and (await r.json())["error"]["type"] == "invalid_request_error"
+            assert seen == []
+            async with client.post(url, json=CHAT, headers={"Authorization": "Bearer k1"}) as r:
+                assert r.status == 200
+        assert seen == ["Bearer sk-provider"]
+
+    run(scenario)
+
+
+def test_every_event_of_a_request_carries_its_tenant_and_budgets_are_per_tenant():
+    events = []
+    urgent = {"X-Hermes-User-Facing": "true", "X-Hermes-Deadline-Seconds": "1"}  # priced at about 90
+
+    async def provider(request):
+        return web.json_response({})
+
+    async def scenario():
+        keys = tenants(("small", 1, "ks"), ("big", 9, "kb"))
+        async with running(provider, keys=keys, pool=10, on_event=events.append) as (client, url):  # caps: 60 and 540 credits
+            for key in ("ks", "kb"):
+                async with client.post(url, json=CHAT, headers={"Authorization": f"Bearer {key}", **urgent}) as r:
+                    assert r.status == 200
+        by_tenant = {}
+        for e in events:
+            by_tenant.setdefault(e["tenant_id"], []).append(e)
+        assert set(by_tenant) == {"small", "big"} and sum(len(v) for v in by_tenant.values()) == len(events)
+        bids = {t: next(e for e in evs if e["event"] == "bid") for t, evs in by_tenant.items()}
+        assert bids["small"]["offered"] == 60 < bids["small"]["asked"]  # held to its own balance
+        assert bids["big"]["offered"] == bids["big"]["asked"]  # the other tenant's balance is untouched
+
+    run(scenario)

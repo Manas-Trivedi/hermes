@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS requests (
     run_id      bigint NOT NULL REFERENCES experiment_runs (id) ON DELETE CASCADE,
     request_id  text NOT NULL,
     gateway     text NOT NULL,
+    tenant_id   text,                   -- who the request belongs to; null for runs recorded before tenants
     t_request   double precision NOT NULL,
     t_end       double precision,       -- result or cancel; null while in flight
     outcome     text CHECK (outcome IN ('result', 'cancelled')),
@@ -28,6 +29,8 @@ CREATE TABLE IF NOT EXISTS requests (
     rejections  integer NOT NULL DEFAULT 0,  -- 429s: wasted retries
     PRIMARY KEY (run_id, request_id)
 );
+
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS tenant_id text;  -- for a database created before tenants
 
 -- One row per bid placed, or placed again at a higher price by aging.
 CREATE TABLE IF NOT EXISTS orders (

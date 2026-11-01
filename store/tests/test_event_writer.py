@@ -90,3 +90,10 @@ def test_a_real_gateway_run_is_stored_as_the_log_counts_it(kind):
         assert row == (count("request"), count("cancelled"), count("forward"), count("rejected"), 0)
         assert conn.execute("SELECT count(*) FROM orders").fetchone()[0] == count("bid") + count("reprice")
         assert conn.execute("SELECT count(*) FROM fills").fetchone()[0] == count("fill")
+
+
+def test_the_tenant_of_a_request_is_stored_and_a_request_without_one_is_not_made_up():
+    with temp_schema() as (conn, url):
+        run_id = create_run(conn, "r", "exchange")
+        write_all(url, run_id, [ev("request", "a", 0.0, tenant_id="acme"), ev("request", "b", 0.0)])
+        assert conn.execute("SELECT request_id, tenant_id FROM requests ORDER BY request_id").fetchall() == [("a", "acme"), ("b", None)]
