@@ -53,7 +53,12 @@ export function Comparison() {
           </>
         )}
       </p>
-      {error && <p>Results unavailable: {error}</p>}
+      {error && (
+        <p>
+          Results unavailable ({error}). Is the results server running? Start it with{" "}
+          <code>uv run python -m store.api --database &lt;url&gt;</code>, then reload.
+        </p>
+      )}
       {runs && names.length === 0 && <p>No finished runs stored yet.</p>}
       {chosen && (
         <>
