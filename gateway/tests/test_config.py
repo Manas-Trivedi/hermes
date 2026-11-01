@@ -28,6 +28,7 @@ def write(tmp_path, text):
 def test_a_full_config_loads_with_defaults_and_keys_kept_only_as_hashes(tmp_path):
     c = load(write(tmp_path, BASE), environ={"PROVIDER_KEY": "sk-provider"})
     assert (c.requests_per_minute, c.tokens_per_minute, c.default_max_tokens, c.port, c.upstream_key) == (60, 90000, 1024, 8080, "sk-provider")
+    assert (c.max_rate_limit_retries, c.timeout_seconds) == (3, 120.0)
     assert [(t.id, t.share) for t in c.tenants] == [("acme", 3), ("beta", 1.0)]
     assert c.keys[hash_key("k2")].id == "acme" and c.keys[hash_key("k3")].id == "beta" and "k1" not in c.keys
 

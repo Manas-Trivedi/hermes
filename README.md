@@ -237,7 +237,7 @@ With tenants listed, every request must carry `Authorization: Bearer <api key>` 
 | `X-Hermes-Deadline-Seconds: 30` | When the answer is needed, from now |
 | `X-Hermes-Batch: <id>` | One call of a bulk job |
 
-All are optional and are removed before the call goes to the provider. A provider 429 is retried behind the scenes. A request that cannot be priced gets a 400, and an unreachable provider a 502, both in OpenAI's error format. Not done yet: timeouts, and cancelling the bid of a client that disconnects.
+All are optional and are removed before the call goes to the provider. A provider 429 is retried behind the scenes a few times (`max_rate_limit_retries`, default 3), then the client gets the provider's own 429 and body, so a quota that cannot recover does not loop forever. A request that cannot be priced gets a 400, an unreachable provider a 502 and a provider that stays silent past `timeout_seconds` a 504, all in OpenAI's error format. With tenants, a provider 401 or 403 means the proxy's own key is wrong, so the client gets a 502 instead. A client that hangs up while its call waits has its bid withdrawn, and one that leaves mid-reply stops the upstream read.
 
 ## Recording and watching a run
 

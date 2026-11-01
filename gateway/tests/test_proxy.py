@@ -10,7 +10,7 @@ from aiohttp import web
 
 from client import Engine
 from client.engine import DEFAULT_BINARY
-from gateway.proxy import CHAT_PATH, Proxy
+from gateway.proxy import CHAT_PATH, RUNNER_ARGS, Proxy
 
 BINARY = os.environ.get("HERMES_ENGINE") or DEFAULT_BINARY
 pytestmark = pytest.mark.skipif(not os.path.exists(BINARY), reason=f"engine binary not built: {BINARY}")
@@ -18,8 +18,8 @@ pytestmark = pytest.mark.skipif(not os.path.exists(BINARY), reason=f"engine bina
 CHAT = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4}
 
 
-async def serve(app: web.Application) -> tuple[web.AppRunner, str]:
-    runner = web.AppRunner(app)
+async def serve(app: web.Application, **runner_args) -> tuple[web.AppRunner, str]:
+    runner = web.AppRunner(app, **runner_args)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
@@ -31,7 +31,7 @@ async def running(handler, limit=600, **proxy_args):
     """A fake provider running `handler`, a proxy in front of it, and a client session."""
     upstream, upstream_url = await serve(_app(handler))
     with Engine(arena=1000) as engine:
-        front, front_url = await serve(Proxy(upstream_url + CHAT_PATH, engine, limit, **proxy_args).app())
+        front, front_url = await serve(Proxy(upstream_url + CHAT_PATH, engine, limit, **proxy_args).app(), **RUNNER_ARGS)
         try:
             async with aiohttp.ClientSession() as client:
                 yield client, front_url + CHAT_PATH
@@ -172,7 +172,7 @@ def test_a_request_that_cannot_be_priced_is_refused_before_it_bids(body, headers
 def test_a_provider_that_is_down_gives_a_502_in_the_openai_error_shape():
     async def scenario():
         with Engine(arena=100) as engine:
-            front, url = await serve(Proxy("http://127.0.0.1:1/v1/chat/completions", engine, 600).app())
+            front, url = await serve(Proxy("http://127.0.0.1:1/v1/chat/completions", engine, 600).app(), **RUNNER_ARGS)
             try:
                 async with aiohttp.ClientSession() as client:
                     async with client.post(url + CHAT_PATH, json=CHAT) as r:
@@ -230,5 +230,104 @@ def test_every_event_of_a_request_carries_its_tenant_and_budgets_are_per_tenant(
         bids = {t: next(e for e in evs if e["event"] == "bid") for t, evs in by_tenant.items()}
         assert bids["small"]["offered"] == 60 < bids["small"]["asked"]  # held to its own balance
         assert bids["big"]["offered"] == bids["big"]["asked"]  # the other tenant's balance is untouched
+
+    run(scenario)
+
+
+async def until(condition, seconds=3.0):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "timed out waiting"
+        await asyncio.sleep(0.02)
+
+
+def test_a_client_that_hangs_up_while_waiting_has_its_bid_withdrawn_and_nothing_is_sent():
+    events, calls = [], []
+
+    async def provider(request):
+        calls.append(1)
+        return web.json_response({})
+
+    async def scenario():
+        async with running(provider, limit=6, on_event=events.append) as (client, url):  # a slice every 10s
+            async with client.post(url, json=CHAT) as r:  # takes the slice resting at start
+                assert r.status == 200
+            with pytest.raises(asyncio.TimeoutError):
+                async with client.post(url, json=CHAT, timeout=aiohttp.ClientTimeout(total=0.3)):
+                    pass
+            await until(lambda: any(e["event"] == "cancelled" for e in events))
+        assert len(calls) == 1
+
+    run(scenario)
+
+
+def test_a_client_that_leaves_mid_stream_stops_the_provider_and_the_proxy_keeps_serving():
+    sent = []
+
+    async def provider(request):
+        if request.headers.get("X-Test") != "stream":
+            return web.json_response({"ok": True})
+        reply = web.StreamResponse()
+        await reply.prepare(request)
+        for i in range(400):
+            await reply.write(b"x" * 100)
+            sent.append(i)
+            await asyncio.sleep(0.01)
+        return reply
+
+    async def scenario():
+        async with running(provider) as (client, url):
+            async with client.post(url, json=CHAT, headers={"X-Test": "stream"}) as r:
+                await r.content.read(100)
+            await asyncio.sleep(0.5)
+            seen = len(sent)
+            await asyncio.sleep(0.5)
+            assert len(sent) == seen < 400  # the provider stopped being read
+            async with client.post(url, json=CHAT) as r:
+                assert r.status == 200
+
+    run(scenario)
+
+
+def test_a_silent_provider_gives_a_504():
+    async def provider(request):
+        await asyncio.sleep(5)
+        return web.json_response({})
+
+    async def scenario():
+        async with running(provider, upstream_timeout=0.3) as (client, url):
+            async with client.post(url, json=CHAT) as r:
+                assert r.status == 504 and (await r.json())["error"]["type"] == "timeout"
+
+    run(scenario)
+
+
+def test_a_provider_401_is_the_clients_own_problem_in_open_mode_and_ours_in_tenant_mode():
+    async def provider(request):
+        return web.json_response({"error": {"message": "bad key"}}, status=401)
+
+    async def scenario():
+        async with running(provider) as (client, url):
+            async with client.post(url, json=CHAT) as r:
+                assert (r.status, (await r.json())["error"]["message"]) == (401, "bad key")
+        async with running(provider, keys=tenants(("acme", 1, "k1"))) as (client, url):
+            async with client.post(url, json=CHAT, headers={"Authorization": "Bearer k1"}) as r:
+                assert r.status == 502 and "credentials" in (await r.json())["error"]["message"]
+
+    run(scenario)
+
+
+def test_a_provider_that_keeps_saying_429_is_retried_a_few_times_then_the_client_gets_its_429_and_body():
+    calls = []
+
+    async def provider(request):
+        calls.append(1)
+        return web.json_response({"error": {"code": "insufficient_quota"}}, status=429, headers={"Retry-After": "7"})
+
+    async def scenario():
+        async with running(provider, limit=6000, max_rate_limit_retries=2) as (client, url):
+            async with client.post(url, json=CHAT) as r:
+                assert r.status == 429 and r.headers["Retry-After"] == "7" and (await r.json())["error"]["code"] == "insufficient_quota"
+        assert len(calls) == 3  # the first try and two retries
 
     run(scenario)

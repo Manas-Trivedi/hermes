@@ -3,11 +3,13 @@
     [upstream]
     url = "https://api.openai.com/v1/chat/completions"
     api_key_env = "OPENAI_API_KEY"   # optional: the environment variable holding the provider's key
+    timeout_seconds = 120            # longest the provider may stay silent, before the reply or between chunks
 
     [limits]
     requests_per_minute = 60
     tokens_per_minute = 90000        # optional
     default_max_tokens = 1024        # output allowance for a request that sets none
+    max_rate_limit_retries = 3       # provider 429s retried per request before the client gets the 429
 
     [server]                         # optional
     host = "127.0.0.1"
@@ -50,6 +52,8 @@ class Config:
     upstream_key: str | None = None
     tokens_per_minute: float | None = None
     default_max_tokens: int = 1024
+    max_rate_limit_retries: int = 3
+    timeout_seconds: float = 120.0
     host: str = "127.0.0.1"
     port: int = 8080
     pool: float | None = None
@@ -65,6 +69,12 @@ def hash_key(key: str) -> str:
 def _positive(value, name: str, kind=(int, float)):
     if isinstance(value, bool) or not isinstance(value, kind) or value <= 0:
         raise ConfigError(f"{name} must be a positive number")
+    return value
+
+
+def _non_negative(value, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"{name} must be a whole number, 0 or more")
     return value
 
 
@@ -100,6 +110,8 @@ def load(path, environ=os.environ) -> Config:
         requests_per_minute=_positive(limits.get("requests_per_minute"), "limits.requests_per_minute"),
         tokens_per_minute=None if "tokens_per_minute" not in limits else _positive(limits["tokens_per_minute"], "limits.tokens_per_minute"),
         default_max_tokens=_positive(limits.get("default_max_tokens", 1024), "limits.default_max_tokens", int),
+        max_rate_limit_retries=_non_negative(limits.get("max_rate_limit_retries", 3), "limits.max_rate_limit_retries"),
+        timeout_seconds=_positive(upstream.get("timeout_seconds", 120.0), "upstream.timeout_seconds"),
         host=server.get("host", "127.0.0.1"),
         port=_positive(server.get("port", 8080), "server.port", int),
         pool=None if "pool" not in credits else _positive(credits["pool"], "credits.pool"),

@@ -26,6 +26,15 @@ Urgency headers (all optional, removed before the call goes upstream):
     X-Hermes-Deadline-Seconds: 30       when the answer is needed, from now
     X-Hermes-Batch: <id>                one call of a bulk job
 
+Giving up: a client that disconnects while its call waits has its bid taken out
+of the book; one that disconnects once the call has won stops the upstream read
+and frees the connection. The provider may stay silent for `upstream_timeout`
+seconds (504 before the reply starts; a cut stream after). A provider 429 is
+retried up to `max_rate_limit_retries` times and then handed to the client with
+its own body, so a quota that cannot recover does not loop forever. In tenant
+mode the credentials upstream are the proxy's own, so a provider 401 or 403 is
+our fault, not the client's, and becomes a 502.
+
 Parsing a body runs off the event loop. Nothing in the reply is parsed.
 """
 
@@ -48,6 +57,7 @@ from pricing import AgentConfig, Budgets, Scorer, TaskMeta
 
 CHAT_PATH = "/v1/chat/completions"
 MAX_BODY = 64 * 1024 * 1024
+RUNNER_ARGS = {"handler_cancellation": True}  # without it a client that hangs up leaves its bid in the book
 _HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
 _NOT_FORWARDED = _HOP_BY_HOP | {"host", "content-length"}
 
@@ -104,12 +114,14 @@ class _Call:
     request: web.Request
     body: bytes
     done: asyncio.Future  # resolved with the response to return, once the call has been answered
+    rejections: int = 0  # provider 429s so far
 
 
 class Proxy:
     def __init__(self, upstream: str, engine: Engine, limit_per_minute: float, tokens_per_minute: float | None = None,
                  default_max_tokens: int = 1024, scorer: Scorer | None = None, on_event=None, clock=time.monotonic,
-                 keys: dict | None = None, upstream_key: str | None = None, pool: float | None = None, cap_seconds: float = 60.0):
+                 keys: dict | None = None, upstream_key: str | None = None, pool: float | None = None, cap_seconds: float = 60.0,
+                 upstream_timeout: float = 120.0, max_rate_limit_retries: int = 3):
         """`keys` maps the sha256 of an API key to its Tenant (gateway.config); without it the proxy is open."""
         self._upstream = upstream
         self._engine = engine
@@ -119,6 +131,8 @@ class Proxy:
         self._scorer = scorer or Scorer()
         self._on_event = on_event
         self._clock = clock
+        self._upstream_timeout = upstream_timeout
+        self._max_retries = max_rate_limit_retries
         self._keys = keys or {}
         self._upstream_key = upstream_key
         self._budgets = None
@@ -133,7 +147,8 @@ class Proxy:
     @classmethod
     def from_config(cls, config: Config, engine: Engine, **kw) -> "Proxy":
         return cls(config.upstream_url, engine, config.requests_per_minute, config.tokens_per_minute, config.default_max_tokens,
-                   keys=config.keys, upstream_key=config.upstream_key, pool=config.pool, cap_seconds=config.cap_seconds, **kw)
+                   keys=config.keys, upstream_key=config.upstream_key, pool=config.pool, cap_seconds=config.cap_seconds,
+                   upstream_timeout=config.timeout_seconds, max_rate_limit_retries=config.max_rate_limit_retries, **kw)
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=MAX_BODY)
@@ -147,7 +162,7 @@ class Proxy:
         # Bytes go through untouched, so the client sees the provider's own encoding; the pool is unbounded
         # because the exchange, not the pool, decides how many calls are out.
         self._session = aiohttp.ClientSession(auto_decompress=False, connector=aiohttp.TCPConnector(limit=0),
-                                              timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
+                                              timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=self._upstream_timeout))
         self._gateway = ExchangeGateway(
             self._send, self._engine, self._limit, clock=self._clock, on_event=self._on_event,
             rescore=lambda task, now: self._scorer.score(task.meta, now).price, tokens_per_minute=self._tokens_per_minute,
@@ -181,11 +196,13 @@ class Proxy:
         request_id = f"proxy-{uuid.uuid4().hex}"
         call = _Call(request, body, self._loop.create_future())
         self._calls[request_id] = call
+        task = self._gateway.submit(request_id, self._scorer.score(meta, now).price, meta, tokens)
         try:
-            self._gateway.submit(request_id, self._scorer.score(meta, now).price, meta, tokens)
             return await call.done
         finally:
             del self._calls[request_id]
+            if not call.done.done() or call.done.cancelled():  # the client hung up (cancelling the handler cancels the future): withdraw the bid
+                self._gateway.cancel(task)  # a no-op if it already won; _forward then finds no call
 
     def _send(self, request_id: str) -> Reply:
         """Runs on the gateway's thread for a call that won a slice; waits for the loop to answer the client."""
@@ -203,7 +220,11 @@ class Proxy:
                     headers["Authorization"] = f"Bearer {self._upstream_key}"
             async with self._session.post(self._upstream, data=call.body, headers=headers) as upstream:
                 if upstream.status == 429:
-                    return Reply(429, float(upstream.headers.get("Retry-After") or 0))
+                    call.rejections += 1
+                    if call.rejections <= self._max_retries:
+                        return Reply(429, float(upstream.headers.get("Retry-After") or 0))
+                elif upstream.status in (401, 403) and self._keys:
+                    return self._answer(call, error_response(502, "the provider rejected the proxy's credentials", "api_connection_error"), 502)
                 reply = web.StreamResponse(status=upstream.status, reason=upstream.reason,
                                            headers={k: v for k, v in upstream.headers.items() if k.lower() not in _HOP_BY_HOP})
                 await reply.prepare(call.request)
@@ -211,18 +232,24 @@ class Proxy:
                     async for chunk in upstream.content.iter_any():
                         await reply.write(chunk)
                     await reply.write_eof()
-                except aiohttp.ClientError:
+                except ConnectionResetError:
+                    pass  # the client left mid-reply; leaving the block closes the upstream connection
+                except (aiohttp.ClientError, asyncio.TimeoutError):
                     call.request.transport.close()  # the headers are out, so the only honest signal is a cut stream
-                call.done.set_result(reply)
-                return Reply(upstream.status)
+                return self._answer(call, reply, upstream.status, final=True)
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            if not call.done.done():
-                call.done.set_result(error_response(502, f"upstream failed: {type(e).__name__}", "api_connection_error"))
-            return Reply(502)
+            timed_out = isinstance(e, (asyncio.TimeoutError, aiohttp.ServerTimeoutError))
+            status, kind = (504, "timeout") if timed_out else (502, "api_connection_error")
+            return self._answer(call, error_response(status, f"upstream {'timed out' if timed_out else 'failed'}: {type(e).__name__}", kind), status)
         except BaseException:
-            if not call.done.done():
-                call.done.set_result(error_response(500, "proxy error", "server_error"))
+            self._answer(call, error_response(500, "proxy error", "server_error"), 500)
             raise
+
+    @staticmethod
+    def _answer(call: _Call, response: web.StreamResponse, status: int, final: bool = False) -> Reply:
+        if not call.done.done():  # a cancelled future is done: the client hung up and the handler is gone
+            call.done.set_result(response)
+        return Reply(status, retry=not final)
 
 
 def main() -> None:
@@ -235,7 +262,7 @@ def main() -> None:
     except (OSError, ConfigError) as e:
         raise SystemExit(f"config error: {e}")
     with Engine(arena=a.arena) as engine:
-        web.run_app(Proxy.from_config(config, engine).app(), host=config.host, port=config.port, print=lambda *_: None)
+        web.run_app(Proxy.from_config(config, engine).app(), host=config.host, port=config.port, print=lambda *_: None, **RUNNER_ARGS)
 
 
 if __name__ == "__main__":

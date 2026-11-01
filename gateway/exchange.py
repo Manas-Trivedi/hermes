@@ -283,7 +283,7 @@ class ExchangeGateway:
             self._emit("result", task, status=None, error=task.error)
             task._done.set()
             return
-        if reply.status == 429:
+        if reply.status == 429 and reply.retry:
             self._emit("rejected", task)  # before requeueing, so the next bid comes after it
             with self._cv:
                 self.wasted_retries += 1

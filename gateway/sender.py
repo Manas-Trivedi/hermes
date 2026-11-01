@@ -13,6 +13,7 @@ from dataclasses import dataclass
 class Reply:
     status: int
     retry_after: float = 0.0  # seconds, from the Retry-After header of a 429
+    retry: bool = True  # a 429 is bid again unless the sender says this one is final (the proxy's cap)
 
 
 class HttpSender:
