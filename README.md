@@ -26,11 +26,11 @@ Every agentic system shares one scarce resource: LLM API rate limits, GPU minute
 
 Hermes treats capacity as an asset and runs an exchange for it. Throttled capacity is released in fixed time slices. Agents bid for the next slice with a price derived from real urgency: deadline slack, whether a user is waiting, how long the task has already queued. The same price-time-priority matching used by stock exchanges clears the book, and a gateway only forwards an LLM call once that call has won a slice.
 
-The claim to prove, with numbers: **market-based allocation beats both naive rate limiting and priority scheduling with aging** on completion time, tail latency, failures and wasted retries, on identical workloads.
+The claim to test, with numbers: **market-based allocation beats both naive rate limiting and priority scheduling with aging** on completion time, tail latency, failures and wasted retries, on identical workloads. The first results are in [Results](#results), and they support a narrower claim than this one.
 
-## What it will be
+## What it is
 
-The goal is a service you can deploy, not a demo. Hermes will be a drop-in proxy that speaks the OpenAI chat API and sits in front of your LLM provider. Point your agents' base URL at it and nothing else in the agents changes. It will run from a Docker image, configured by a file, with API keys and credit budgets per team. This is the target and none of the service layer is built yet; the status table below says what exists.
+The goal is a service you can deploy, not a demo. Hermes is a drop-in proxy that speaks the OpenAI chat API and sits in front of your LLM provider. Point your agents' base URL at it and nothing else in the agents changes. It runs from a Docker image, configured by a file, with API keys and credit budgets per team. It has not run against a real provider yet: it was tested against fakes only, so treat it as ready to try, not proven in production. The status table says what exists.
 
 ## How it works
 
@@ -54,14 +54,29 @@ Hermes is being built in the open, one small step at a time.
 | Bidder agents | PR review, support triage, research synthesis, and a seeded workload that drives them | Done |
 | Persistence and live feed | Postgres storage of every run, request, bid and fill, and a live WebSocket stream of gateway events | Done |
 | Dashboard | Live order book, fills, per-agent request timelines, and a FIFO vs priority vs exchange comparison of stored runs | Done |
-| Experiment | Same workload, three allocation strategies, published results | Runner built, no results yet |
-| Deployable service | OpenAI-compatible proxy, token-weighted capacity, API keys and budgets per team, restart safety, Docker image | Planned |
+| Experiment | Same workload, three allocation strategies, with an honest and an inflating variant | Run on 3 seeds. Robustness sweeps not run. See Results |
+| Deployable service | OpenAI-compatible proxy, token-weighted capacity, API keys and budgets per team, timeouts and cancellation, adaptive rate, restart safety, health and metrics, Docker image, optional dashboard | Built, tested against fakes only |
 
-No benchmark numbers yet. They will appear here once the experiment has actually been run.
+## Results
+
+The same seeded workload, about 30 calls a minute against a limit of 20, played through each way of ordering the wait. Three seeds, once with every agent honest and once with the PR review agent declaring everything urgent. Lower is better; the figures are P95 latency in seconds.
+
+| Agent | FIFO | Priority with aging | Exchange | FIFO | Priority with aging | Exchange |
+|---|---|---|---|---|---|---|
+| | **All agents honest** | | | **PR review inflates** | | |
+| Support (a customer waiting) | 61.5 | **7.4** | 18.0 | 61.5 | 41.7 | **15.1** |
+| Research | 56.0 | 62.0 | **47.7** | 56.0 | 105.2 | **45.1** |
+| PR review | **63.4** | 87.0 | 90.8 | 63.4 | **42.1** | 92.4 |
+
+- Every method finishes the work in the same time, because the provider's limit is the bottleneck.
+- With honest agents, priority scheduling serves the urgent agent better than the exchange does. The exchange does **not** beat a good priority queue here.
+- When one agent lies about urgency, priority scheduling is exploited: the liar's latency halves while support's rises almost sixfold. The exchange is not exploited, because urgency has to be paid for with credits that run out.
+- The results are small and incomplete: three seeds, about 20 pieces of work per run, a fake provider, and none of the planned sweeps of the aging rate, credit pool or provider limit were run. The full write-up, with a step-by-step example, the checks and what can go wrong, is in [the results write-up](docs/RESULTS.md).
+
 
 ## Getting started
 
-Hermes is not usable end to end yet. The matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload run today. Gateway events can be stored in Postgres and streamed over WebSocket. The dashboard shows a run live and compares stored runs. An experiment runner plays the workload under all three conditions and stores the runs; the final metrics, sweeps and write-up are still to come.
+To run the service, jump to [Deploying](#deploying). The rest of this section is for working on the code and rerunning the experiment: the matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload all run locally. Gateway events can be stored in Postgres and streamed over WebSocket, the dashboard shows a run live and compares stored runs, and the experiment runner plays the workload under all three conditions and stores the runs.
 
 **Requirements**
 
