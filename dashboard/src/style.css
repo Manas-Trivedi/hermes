@@ -5,6 +5,7 @@
   --line: #e3e2de;
   --panel: #f1f0ec;
   --accent: #2a78d6;
+  --wait: #8d8c86;
 }
 @media (prefers-color-scheme: dark) {
   :root {

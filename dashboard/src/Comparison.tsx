@@ -6,10 +6,11 @@ import { CONDITIONS, METRICS, experimentNames, perAgent, perCondition, type Agen
 // (color follows the condition, not its rank). The aqua is under 3:1 on white,
 // so every bar also carries its value and the table below has the same numbers.
 const COLORS = { fifo: "#2a78d6", priority: "#eb6834", exchange: "#1baf7a" };
-const INK = "#0b0b0b";
-const MUTED = "#52514e";
+// Theme colors come from the page, so the chart text and axis stay readable in dark mode.
+const INK = "var(--ink)";
+const MUTED = "var(--muted)";
 
-const PANEL = { w: 200, h: 140, top: 18, bottom: 6 };
+const PANEL = { w: 260, h: 180, top: 22, bottom: 6 };
 
 const fmt = (v: number | null | undefined, unit: string) => (v == null ? "–" : `${Number.isInteger(v) ? v : v.toFixed(1)}${unit}`);
 const fmtStat = (s: Stat | undefined, unit: string) =>

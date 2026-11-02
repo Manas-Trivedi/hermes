@@ -3,7 +3,7 @@ import { recentLives, type Lives } from "./lives";
 const WINDOW = 60; // seconds of history shown
 const WIDTH = 600;
 const ROW = 12;
-const COLORS = { waiting: "#bbb", sending: "#2a6fdb" };
+const COLORS = { waiting: "var(--wait)", sending: "var(--accent)" };
 
 // One row per request; grey while it waits for a slice, blue while the backend has it.
 export function Timelines({ lives }: { lives: Lives }) {
@@ -30,7 +30,7 @@ export function Timelines({ lives }: { lives: Lives }) {
                         <title>{`${life.id}: ${s.kind}`}</title>
                       </rect>
                       {s.kind === "sending" && s.end !== null && life.segments[i + 1]?.kind === "waiting" && (
-                        <text x={x(end)} y={row * ROW + ROW - 2} fontSize={ROW}>✕</text>
+                        <text x={x(end)} y={row * ROW + ROW - 2} fontSize={ROW} fill="var(--ink)">✕</text>
                       )}
                     </g>
                   );
