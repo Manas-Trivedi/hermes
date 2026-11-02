@@ -13,9 +13,9 @@
 </p>
 
 <p align="center">
-  <img alt="status" src="https://img.shields.io/badge/status-early%20development-orange">
+  <img alt="status" src="https://img.shields.io/badge/status-beta-yellow">
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-blue">
-  <img alt="python" src="https://img.shields.io/badge/python-3.12%2B-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.11%2B-blue">
 </p>
 
 ---
@@ -42,7 +42,7 @@ The goal is a service you can deploy, not a demo. Hermes is a drop-in proxy that
 
 ## Status
 
-Hermes is being built in the open, one small step at a time.
+Every stage below is built and tested. The service has only been run against fake providers, never a real one, and the live demo recording is still to do.
 
 | Stage | What | State |
 |---|---|---|
@@ -76,7 +76,14 @@ The same seeded workload, about 30 calls a minute against a limit of 20, played 
 
 ## Getting started
 
-To run the service, jump to [Deploying](#deploying). The rest of this section is for working on the code and rerunning the experiment: the matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload all run locally. Gateway events can be stored in Postgres and streamed over WebSocket, the dashboard shows a run live and compares stored runs, and the experiment runner plays the workload under all three conditions and stores the runs.
+There are two ways to run Hermes, and they use different Docker setups:
+
+| You want to | Use | Docker |
+|---|---|---|
+| Run the proxy for a team | [Deploying](#deploying) | `deploy/docker-compose.yml`, which builds the root `Dockerfile` (the proxy and the engine in one image) |
+| Work on the code, rerun the demo or the experiment | The rest of this section | The root `docker-compose.yml`, which starts only Postgres and the results server. The engine, the demo, the runner and the dashboard dev server run on your machine and need the requirements below, plus Node for the dashboard |
+
+The rest of this section is for working on the code and rerunning the experiment: the matching engine, its Python client, the capacity scheduler, the gateways, the urgency scorer, credit budgets and the three agents with their seeded workload all run locally. Gateway events can be stored in Postgres and streamed over WebSocket, the dashboard shows a run live and compares stored runs, and the experiment runner plays the workload under all three conditions and stores the runs.
 
 **Requirements**
 
@@ -173,7 +180,7 @@ uv run python -m experiments.report --database postgresql://postgres:hermes@loca
 **Drive the book from the command line**
 
 ```bash
-printf 'SELL 1 100 1\nBUY 8 105 1\nBOOK\n' | ./build/matcha --arena 1000
+printf 'SELL 1 100 1\nBUY 8 105 1\nBOOK\n' | ./engine/build/matcha --arena 1000
 ```
 
 The engine reads one command per line on stdin and writes one reply per command on stdout. It prints `READY` when it is up, and exits when stdin closes. The full command set and reply format are documented in the protocol notes under the engine directory.
@@ -217,7 +224,7 @@ Without a cost for urgency, every agent would bid its maximum. So each agent has
 
 ## Token limits
 
-Providers cap tokens per minute as well as requests per minute. The exchange gateway takes an optional tokens-per-minute limit. A slice stays one request, but each request that wins is charged its estimated tokens (its prompt at about four characters a token, plus the most it may generate), and the next slice is held back until those tokens are repaid at the token rate. So the release rate follows whichever limit is stricter, and a large request delays the line behind it instead of paying a bigger price. The estimate is a budget, not a count; correcting it with the usage the provider reports comes with the OpenAI-compatible surface. Without a token limit nothing changes.
+Providers cap tokens per minute as well as requests per minute. The exchange gateway takes an optional tokens-per-minute limit. A slice stays one request, but each request that wins is charged its estimated tokens (its prompt at about four characters a token, plus the most it may generate), and the next slice is held back until those tokens are repaid at the token rate. So the release rate follows whichever limit is stricter, and a large request delays the line behind it instead of paying a bigger price. The estimate is a budget, not a count; it is not corrected with the usage the provider reports, because the adaptive rate (below) absorbs its error. Without a token limit nothing changes.
 
 ## The proxy
 
@@ -288,7 +295,16 @@ Point your agents' base URL at `http://<host>:8080/v1` and give each team its ow
 
 The dashboard is optional and not part of the proxy image. To use it, uncomment `[feed]` in `hermes.toml`, set `FEED_TOKEN` in `.env`, copy `dashboard-config.example.json` to `dashboard-config.json` with the same token in its feed address, and start it with `docker compose --profile dashboard up -d`. It is then at port 8081 and shows each tenant's waiting and finished calls, the book, the fills and timelines per tenant. The feed carries every tenant's traffic, so the proxy will not start a feed beyond localhost without a token.
 
-Check it with `curl localhost:8080/health`. To stop it without dropping work, use `docker compose stop`: calls still waiting for a slice get a 503 with `Retry-After`, and calls already out get up to a minute to finish. Run one proxy per database. 
+Check it with `curl localhost:8080/health`. To stop it without dropping work, use `docker compose stop`: calls still waiting for a slice get a 503 with `Retry-After`, and calls already out get up to a minute to finish. Run one proxy per database.
+
+**Using the image without compose.** `deploy/docker-compose.yml` builds the root `Dockerfile`. To build and run the image yourself, from the repository root:
+
+```bash
+docker build -t hermes .
+docker run -v $PWD/deploy/hermes.toml:/etc/hermes/hermes.toml:ro -e OPENAI_API_KEY -p 8080:8080 hermes
+```
+
+The config is read from `/etc/hermes/hermes.toml`. Inside the container it must keep `server.host = "0.0.0.0"` and `server.port = 8080`, as the sample does. Any environment variable the config names (`api_key_env`, `url_env`, `metrics_token_env`) has to be passed with `-e`. Without a `[database]` the proxy runs but stores nothing and loses credit balances on restart. The image has a health check, so `docker ps` shows whether it is healthy.
 
 ## Recording and watching a run
 
