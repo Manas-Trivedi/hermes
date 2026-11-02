@@ -61,12 +61,24 @@ Every stage below is built and tested. The service has only been run against fak
 
 The same seeded workload, about 30 calls a minute against a limit of 20, played through each way of ordering the wait. Three seeds, once with every agent honest and once with the PR review agent declaring everything urgent. Lower is better; the figures are P95 latency in seconds.
 
-| Agent | FIFO | Priority with aging | Exchange | FIFO | Priority with aging | Exchange |
-|---|---|---|---|---|---|---|
-| | **All agents honest** | | | **PR review inflates** | | |
-| Support (a customer waiting) | 61.5 | **7.4** | 18.0 | 61.5 | 41.7 | **15.1** |
-| Research | 56.0 | 62.0 | **47.7** | 56.0 | 105.2 | **45.1** |
-| PR review | **63.4** | 87.0 | 90.8 | 63.4 | **42.1** | 92.4 |
+<table>
+  <thead>
+    <tr>
+      <th rowspan="2" align="left">Agent</th>
+      <th colspan="3">All agents honest</th>
+      <th colspan="3">PR review inflates</th>
+    </tr>
+    <tr>
+      <th>FIFO</th><th>Priority with aging</th><th>Exchange</th>
+      <th>FIFO</th><th>Priority with aging</th><th>Exchange</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Support (a customer waiting)</td><td align="center">61.5</td><td align="center"><b>7.4</b></td><td align="center">18.0</td><td align="center">61.5</td><td align="center">41.7</td><td align="center"><b>15.1</b></td></tr>
+    <tr><td>Research</td><td align="center">56.0</td><td align="center">62.0</td><td align="center"><b>47.7</b></td><td align="center">56.0</td><td align="center">105.2</td><td align="center"><b>45.1</b></td></tr>
+    <tr><td>PR review</td><td align="center"><b>63.4</b></td><td align="center">87.0</td><td align="center">90.8</td><td align="center"><b>63.4</b></td><td align="center"><b>42.1</b></td><td align="center">92.4</td></tr>
+  </tbody>
+</table>
 
 - Every method finishes the work in the same time, because the provider's limit is the bottleneck.
 - With honest agents, priority scheduling serves the urgent agent better than the exchange does. The exchange does **not** beat a good priority queue here.
