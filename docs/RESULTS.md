@@ -98,13 +98,39 @@ A support ticket's answer in the exchange run for seed 1, all agents honest (rea
 
 This is the main reason the exchange loses to priority scheduling here. Support's share of the pool (5.8 credits a second) is smaller than what its steady stream of urgent calls would cost, so it regularly runs short. That is an explanation consistent with the numbers, not one that has been proven. Changing the pool size (see below) is the test.
 
+## Credit pool sweep (3 seeds)
+
+The explanation above says the exchange loses to priority scheduling because support's share of the credit pool is too small. To test it, the exchange was rerun with a pool of 20 and 40 credits a second (the original was 10), once with honest agents and once with PR review inflating, on seeds 1 to 3. Only the exchange depends on the pool, so priority and FIFO were not rerun. The numbers are P95 latency in seconds, averaged over the three seeds. Failures are the total over the three seeds (24 PR review calls and about 55 calls in all per seed).
+
+| Case | Condition | Support | PR review | Research | Failures |
+|---|---|---|---|---|---|
+| Honest | fifo | 61.5 | 63.4 | 56.0 | 0 |
+| Honest | priority | **7.4** | 87.0 | 62.0 | 0 |
+| Honest | exchange, pool 10 | 18.0 | 91.7 | 47.7 | 2 |
+| Honest | exchange, pool 20 | 8.3 | 102.9 | 41.9 | 3 |
+| Honest | exchange, pool 40 | 8.3 | 102.4 | 41.9 | 2 |
+| PR review inflates | fifo | 61.5 | 63.4 | 56.0 | 0 |
+| PR review inflates | priority | 41.7 | 42.1 | 105.5 | 1 |
+| PR review inflates | exchange, pool 10 | 15.1 | 92.9 | 45.1 | 1 |
+| PR review inflates | exchange, pool 20 | 9.2 | 92.0 | 57.0 | 0 |
+| PR review inflates | exchange, pool 40 | 13.4 | 82.3 | 82.9 | 1 |
+
+| What it shows | Detail |
+|---|---|
+| The small pool was the main cause | Going from 10 to 20 cuts support from 18.0 s to 8.3 s with honest agents, close to priority's 7.4 s. A pool of 40 adds nothing. |
+| A bigger pool weakens the protection | At 40, research under inflation waits 82.9 s, close to priority's 105.5 s, and PR review gains more from lying (82.3 s against 92.0 s at 20). Credits stop running out, so the exchange starts to behave like a priority queue. |
+| It is a trade-off | A small pool protects other agents from a liar but slows the urgent agent. A large pool does the opposite. 20 is the middle point on these seeds, and it still beats priority scheduling under inflation (support 9.2 s against 41.7 s). |
+| The cost lands on PR review | PR review, the lowest-weighted agent, waits longest with honest agents (102.9 s against 87.0 s under priority). All failures here are the same kind: a PR review call that lost every auction and was cancelled by the agent after its own 120 s timeout, never sent. They are starvation of the lowest bidder, which is accepted by design until aging is strong enough. The counts (0 to 3) are too small to rank the pool sizes on failures. |
+
+**Limits.** Three seeds, and support makes only 22 calls per run, so its P95 is close to its second-slowest call. Pool 20 was picked after seeing seed 1, and seeds 2 and 3 agreed, which is the check the choice needed, but the pool and the weights are still a policy that was chosen, not a free result. The refill rate and the cap were not swept.
+
 ## What can go wrong with this result
 
 | Risk | Detail |
 |---|---|
 | **Tiny sample** | 3 seeds and about 20 pieces of work per run. Orderings were consistent, but the exact numbers (and especially the small gaps, such as research 47.7 s against 56.0 s) should not be trusted to the second. |
 | **Fake provider** | It enforces exact spacing between calls. Real providers use per-minute windows and variable latency. |
-| **Tuned by one person, once** | The aging rate (1 per second) and the credit pool (10 a second) were fixed before the runs, as planned, and not adjusted afterwards. Neither was swept. A different aging rate could make priority scheduling look better or worse. |
+| **Tuned by one person, once** | The aging rate (1 per second) and the credit pool (10 a second) were fixed before the main runs, as planned, and not adjusted afterwards. The pool was swept later (see the credit pool sweep), with pool 20 chosen after seeing seed 1 and confirmed on seeds 2 and 3; the main tables above still use 10. The aging rate was never swept, so a different one could make priority scheduling look better or worse. |
 | **Short runs** | A 2-minute arrival window. Credit balances start full, which helps every agent early on. A longer run would test the regeneration rule harder. |
 | **A found bug** | One bug that favoured the baselines was found and fixed during the sanity check (see above). There may be others that favour either side. |
 | **A pause during the run** | The last run took 13 minutes of wall-clock time instead of 3, most likely because the computer went to sleep. The experiment's clocks do not count sleep, so its numbers should be unaffected, but the run's stored start and finish times are not meaningful. |
@@ -116,7 +142,7 @@ These checks were planned and **were not run**, because of time:
 | Not done | Why it matters |
 |---|---|
 | Sweep the priority baseline's aging rate | The baseline might be weaker or stronger than shown. |
-| Sweep the credit pool and refill rate | The likely cause of the exchange's support latency (see above) is untested. |
+| Sweep the credit refill rate and cap | The pool size was swept (see above); how the pool is split and how large balances can grow was not. |
 | Vary the provider's rate limit | The comparison was run at one level of overload. |
 | More seeds | Needed for any claim stronger than "consistent in these three". |
 

@@ -81,9 +81,10 @@ The same seeded workload, about 30 calls a minute against a limit of 20, played 
 </table>
 
 - Every method finishes the work in the same time, because the provider's limit is the bottleneck.
-- With honest agents, priority scheduling serves the urgent agent better than the exchange does. The exchange does **not** beat a good priority queue here.
+- With honest agents, priority scheduling serves the urgent agent better than the exchange does at the default credit pool of 10 a second. The exchange does **not** beat a good priority queue here.
+- The credit pool is the cause. A pool of 20 brings the exchange's support latency to 8.3 s, level with priority's 7.4 s, and it still holds up against a lying agent (support 9.2 s against 41.7 s under priority). A pool of 40 gives that protection away. The cost is paid by PR review, the lowest-weighted agent, whose calls wait longest and occasionally time out.
 - When one agent lies about urgency, priority scheduling is exploited: the liar's latency halves while support's rises almost sixfold. The exchange is not exploited, because urgency has to be paid for with credits that run out.
-- The results are small and incomplete: three seeds, about 20 pieces of work per run, a fake provider, and none of the planned sweeps of the aging rate, credit pool or provider limit were run. The full write-up, with a step-by-step example, the checks and what can go wrong, is in [the results write-up](docs/RESULTS.md).
+- The results are small and incomplete: three seeds, about 20 pieces of work per run, a fake provider, and of the planned sweeps only the credit pool was run (pool sizes 10, 20 and 40); the aging rate, the credit refill rate and the provider limit were not. The full write-up, with a step-by-step example, the checks and what can go wrong, is in [the results write-up](docs/RESULTS.md).
 
 
 ## Getting started
